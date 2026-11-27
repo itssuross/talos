@@ -113,6 +113,9 @@ shell_run:
     match_command uptime
     match_command tasks
     match_command yield
+    match_command ls
+    match_command cat
+    match_command exec
     match_command user
     match_command peek
     match_command brk
@@ -201,6 +204,87 @@ shell_run:
 .Lcmd_yield:
     bl sched_yield
     puts_label .Lyield_text
+    b .Lprompt
+
+.Lcmd_ls:
+    puts_label .Lls_header
+    mov x19, #0
+.Lls_row:
+    mov x0, x19
+    bl ramfs_get_entry
+    cbz x0, .Lprompt
+    mov x20, x0
+    ldr x1, [x20, #24]
+    cmp x1, #1
+    adr x0, .Ltype_exec
+    adr x2, .Ltype_file
+    csel x0, x0, x2, eq
+    bl uart_puts
+    ldr x0, [x20, #16]
+    bl .Lput_task_number
+    ldr x0, [x20, #0]
+    bl uart_puts
+    mov w0, #10
+    bl uart_putc
+    add x19, x19, #1
+    b .Lls_row
+
+.Lcmd_cat:
+    ldrb w0, [x20]
+    cbz w0, .Lcat_usage
+    mov x0, x20
+    bl ramfs_lookup
+    cbz x0, .Lcat_not_found
+    ldp x19, x20, [x0, #8]
+    mov w21, #10
+.Lcat_loop:
+    cbz x20, .Lcat_done
+    ldrb w21, [x19], #1
+    mov w0, w21
+    bl uart_putc
+    sub x20, x20, #1
+    b .Lcat_loop
+.Lcat_done:
+    cmp w21, #10
+    b.ne .Lnewline
+    b .Lprompt
+.Lcat_usage:
+    puts_label .Lcat_usage_text
+    b .Lprompt
+.Lcat_not_found:
+    puts_label .Lcat_not_found_text
+    b .Lprompt
+
+.Lcmd_exec:
+    ldrb w0, [x20]
+    cbz w0, .Lexec_usage
+    mov x0, x20
+    bl ramfs_lookup
+    cbz x0, .Lexec_not_found
+    ldr x1, [x0, #24]
+    cmp x1, #1
+    b.ne .Lexec_not_exec
+    ldp x0, x1, [x0, #8]
+    bl user_exec_blob
+    mov x19, x0
+    puts_label .Lexec_exited
+    cmp x19, #0
+    b.ge .Lexec_print_code
+    mov w0, #'-'
+    bl uart_putc
+    neg x19, x19
+.Lexec_print_code:
+    mov x0, x19
+    bl uart_putdec
+    b .Lnewline
+.Lexec_usage:
+    puts_label .Lexec_usage_text
+    b .Lprompt
+.Lexec_not_found:
+    puts_label .Lexec_not_found_text
+    b .Lprompt
+.Lexec_not_exec:
+    puts_label .Lexec_not_exec_text
     b .Lprompt
 
 .Lcmd_user:
@@ -334,14 +418,17 @@ shell_run:
 .Lname_uptime:    .asciz "uptime"
 .Lname_tasks:     .asciz "tasks"
 .Lname_yield:     .asciz "yield"
+.Lname_ls:        .asciz "ls"
+.Lname_cat:       .asciz "cat"
+.Lname_exec:      .asciz "exec"
 .Lname_user:      .asciz "user"
 .Larg_fault:      .asciz "fault"
 .Lname_peek:      .asciz "peek"
 .Lname_brk:       .asciz "brk"
 .Lname_reboot:    .asciz "reboot"
 .Lname_halt:      .asciz "halt"
-.Lhelp_text:      .asciz "Commands: help, info, mmu, ticks, uptime, tasks, yield, user [fault], peek <hex_addr>, brk, reboot, halt\n"
-.Linfo_el:        .asciz "Talos v0.7.0 (aarch64-virt)\nCurrentEL: "
+.Lhelp_text:      .asciz "Commands: help, info, mmu, ticks, uptime, tasks, yield, ls, cat <file>, exec <file>, user [fault], peek <hex_addr>, brk, reboot, halt\n"
+.Linfo_el:        .asciz "Talos v0.8.0 (aarch64-virt)\nCurrentEL: "
 .Lmpidr:          .asciz "\nMPIDR_EL1: "
 .Lvbar:           .asciz "\nVBAR_EL1 : "
 .Lcntfrq:         .asciz "\nCNTFRQ   : "
@@ -361,6 +448,15 @@ shell_run:
 .Ltask_ready:     .asciz "   READY    "
 .Ltask_running:   .asciz "   RUNNING  "
 .Lyield_text:     .asciz "Yielded CPU to scheduler.\n"
+.Lls_header:      .asciz "TYPE  SIZE      NAME\n"
+.Ltype_file:      .asciz "FILE  "
+.Ltype_exec:      .asciz "EXEC  "
+.Lcat_usage_text:      .asciz "Usage: cat <filename>\n"
+.Lcat_not_found_text:  .asciz "cat: file not found\n"
+.Lexec_usage_text:     .asciz "Usage: exec <filename>\n"
+.Lexec_not_found_text: .asciz "exec: file not found\n"
+.Lexec_not_exec_text:  .asciz "exec: not an executable\n"
+.Lexec_exited:         .asciz "Exited with code: "
 .Luser_exited:    .asciz "EL0t user process exited with code: "
 .Luser_fault_start: .asciz "Launching EL0t fault probe (reading kernel 0x40080000)...\n"
 .Luser_fault_done:  .asciz "EL0t fault isolated; returned to shell.\n"
