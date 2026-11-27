@@ -91,6 +91,7 @@ elf64_load:
     ldp x10, x11, [x8, #P_FILESZ]
     cmp x11, x10
     b.lo .Linvalid
+    cbz x11, .Lvalidate_next
     ldr x12, [x8, #P_OFFSET]
     subs x12, x1, x12
     b.lo .Linvalid
