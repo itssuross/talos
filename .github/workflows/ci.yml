@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchains and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm clang lld llvm binutils-aarch64-linux-gnu
+      - name: Smoke test with Clang and LLD
+        run: make -B test
+      - name: Smoke test with GNU binutils
+        run: make -B LLD= AS=aarch64-linux-gnu-as LD=aarch64-linux-gnu-ld OBJCOPY=aarch64-linux-gnu-objcopy BUILD=build-gnu test
