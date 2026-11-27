@@ -6,6 +6,9 @@ on:
     tags: ['v*']
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   smoke-test:
     runs-on: ubuntu-latest
@@ -18,4 +21,6 @@ jobs:
       - name: Smoke test with Clang and LLD
         run: make -B test
       - name: Smoke test with GNU binutils
-        run: make -B LLD= AS=aarch64-linux-gnu-as LD=aarch64-linux-gnu-ld OBJCOPY=aarch64-linux-gnu-objcopy BUILD=build-gnu test
+        run: |
+          make -B LLD= AS=aarch64-linux-gnu-as LD=aarch64-linux-gnu-ld OBJCOPY=aarch64-linux-gnu-objcopy BUILD=/tmp/talos-gnu test
+          rm -rf /tmp/talos-gnu
