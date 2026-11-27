@@ -28,6 +28,6 @@ On Apple Silicon macOS, install QEMU and the LLVM toolchain with `brew install q
 ## Milestones
 
 - [x] **v0.1.0** — EL1 entry, secondary core parking (`MPIDR_EL1`), `.bss` zeroing, FP/SIMD enable (`CPACR_EL1`), PL011 UART0 TX/RX and 64-bit hex output, and PSCI `SYSTEM_OFF`.
-- [ ] **v0.2.0** — `VBAR_EL1` exception vector table, synchronous trap frame dump, and IRQ mask control.
+- [x] **v0.2.0** — 16-entry, 2048-byte aligned `VBAR_EL1` exception vector table, IRQ mask controls, and a `BRK #0x42` self-test that dumps the synchronous exception's fault registers, stack pointer, and all 31 general-purpose registers over UART before PSCI shutdown.
 - [ ] **v0.3.0** — GICv2 interrupt controller and ARM Generic Timer tick.
 - [ ] **v0.4.0** — Interactive kernel shell over UART0.
