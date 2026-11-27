@@ -18,14 +18,23 @@ gic_init:
     mov x0, #GICD_BASE
     mov w1, #1
     str w1, [x0, #GICD_CTLR]
+    b gic_init_cpu
+.size gic_init, . - gic_init
+
+.global gic_init_cpu
+.type gic_init_cpu, %function
+
+// ABI: Clobbers x0–x2.
+gic_init_cpu:
     mov x0, #GICC_BASE
     mov w2, #0xff
     str w2, [x0, #GICC_PMR]
+    mov w1, #1
     str w1, [x0, #GICC_CTLR]
     dsb sy
     isb
     ret
-.size gic_init, . - gic_init
+.size gic_init_cpu, . - gic_init_cpu
 
 .global gic_enable_irq
 .type gic_enable_irq, %function
