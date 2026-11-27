@@ -30,6 +30,8 @@ _start:
     msr cpacr_el1, x0
     isb
 
+    msr spsel, #1
+    isb
     adrp x0, __stack_top
     add x0, x0, :lo12:__stack_top
     mov sp, x0
