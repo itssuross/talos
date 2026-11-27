@@ -7,7 +7,7 @@ LLVM_OBJCOPY := $(or $(wildcard $(LLVM_PREFIX)/bin/llvm-objcopy),$(shell command
 BUILD := build
 ELF := $(BUILD)/talos.elf
 BIN := $(BUILD)/talos.bin
-OBJECTS := $(addprefix $(BUILD)/,boot.o uart.o main.o vectors.o exceptions.o)
+OBJECTS := $(addprefix $(BUILD)/,boot.o uart.o main.o vectors.o exceptions.o gic.o timer.o)
 QEMU ?= qemu-system-aarch64
 QEMU_FLAGS ?= -M virt -cpu cortex-a72 -m 128M -nographic
 
