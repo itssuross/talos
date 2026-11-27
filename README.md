@@ -9,6 +9,7 @@ Talos (`itssuross/talos`) is a hobbyist bare-metal ARM64 kernel written entirely
 | Component | Address or interface |
 | --- | --- |
 | EL1 kernel load address | `0x4008_0000` |
+| VirtIO-MMIO | 32 slots from `0x0A00_0000` through `0x0A00_3E00`, spaced `0x200` bytes apart |
 | PL011 UART0 | `0x0900_0000` |
 | GICv2 Distributor | `0x0800_0000` |
 | GICv2 CPU Interface | `0x0801_0000` |
@@ -21,7 +22,7 @@ Talos enables the MMU and both instruction and data caches before initializing t
 
 | Virtual address range | Translation |
 | --- | --- |
-| `0x0000_0000`–`0x3FFF_FFFF` | L1[0], all 512 L2 blocks. Device-nGnRnE, EL1 RW (`AP[2:1] = 0b00`), `PXN = 1`, `UXN = 1`. Includes the UART and GIC. |
+| `0x0000_0000`–`0x3FFF_FFFF` | L1[0], all 512 L2 blocks. Device-nGnRnE, EL1 RW (`AP[2:1] = 0b00`), `PXN = 1`, `UXN = 1`. Includes the UART, GIC, and VirtIO-MMIO bus. |
 | `0x4000_0000`–`0x401F_FFFF` | L1[1], L2 entry 0. Kernel DRAM: Normal write-back cacheable, inner-shareable, EL1 RW (`AP[2:1] = 0b00`), `UXN = 1`. |
 | `0x4020_0000`–`0x403F_FFFF` | L1[1], L2 entry 1. 2 MiB `EL0t` user arena: Normal write-back cacheable, inner-shareable, EL1/EL0 RW (`AP[2:1] = 0b01`), `PXN = 1`, `UXN = 0`. |
 | `0x4040_0000`–`0x47FF_FFFF` | L1[1], L2 entries 2–63. Remaining kernel DRAM: Normal write-back cacheable, inner-shareable, EL1 RW (`AP[2:1] = 0b00`), `UXN = 1`. |
@@ -36,10 +37,18 @@ On Apple Silicon macOS, install QEMU and the LLVM toolchain with `brew install q
 | Command | Result |
 | --- | --- |
 | `make` | Builds `build/talos.elf` and `build/talos.bin` |
-| `make run` | Boots Talos in QEMU with `-nographic` |
+| `make run` | Boots Talos in QEMU with a serial console and a persistent raw disk at `build/disk.img` |
 | `make test` | Runs scripted shell commands in QEMU and captures their output in `build/test.log` |
 | `make LLD=` | Builds using GNU `aarch64-elf-*` binutils |
 | `make clean` | Removes `build/` |
+
+## VirtIO block storage
+
+`make run` and `make test` create a zero-filled 64 KiB raw disk on first use and reuse it on subsequent boots. The disk has 128 sectors of 512 bytes each. The smoke test writes `TalosDiskOK` to sector 0 and runs `exec blktest.bin`, which writes `TALOS-EL0-BLK-OK` to sector 1, clears its stack buffer, and reads the sector back through the EL0 syscalls. Both commands replace the entire target sector. Use a separate `BUILD` directory for a disposable test disk.
+
+At boot, `src/virtio_blk.S` probes all 32 QEMU slots until it finds a block device. The modern v2 transport negotiates `VIRTIO_F_VERSION_1` and programs separate descriptor, available-ring, and used-ring addresses. Legacy v1 uses a 4 KiB page size, queue alignment, and page frame number. With no disk attached, Talos boots to the shell and `blkinfo` reports `VirtIO-Blk: not attached`.
+
+Both transports share an eight-entry split virtqueue. The descriptor table starts at offset `0x000`, the available ring at `0x080`, and the used ring at `0x1000`. Each transfer chains three descriptors for the request header, the 512-byte data buffer, and the one-byte device status. A spinlock serializes requests. The driver publishes the available entry with `dmb ishst`, issues `dsb sy` before notifying the device, and polls the used index with `ldarh` before reading completion status after `dmb ishld`. It rejects sectors past the end of the disk and writes to read-only media.
 
 ## Four-core SMP
 
@@ -67,7 +76,7 @@ At boot, `worker-a` and `worker-b` record their executing CPU and sleep for one 
 
 ## EL0t user mode, RAMFS, and syscalls
 
-Talos includes a read-only in-memory filesystem (`TalosFS` in `src/ramfs.S`) stored in `.rodata`. `ramfs_table` holds 32-byte entries (`name_ptr`, `data_ptr`, `size`, `flags`, terminated by an all-zero sentinel) housing regular text files (`motd.txt`, `about.txt`) and position-independent flat `EL0t` executables (`hello.bin`, `reader.bin`, `fault.bin`).
+Talos includes a read-only in-memory filesystem (`TalosFS` in `src/ramfs.S`) stored in `.rodata`. `ramfs_table` holds 32-byte entries (`name_ptr`, `data_ptr`, `size`, `flags`, terminated by an all-zero sentinel) housing regular text files (`motd.txt`, `about.txt`) and position-independent flat `EL0t` executables (`hello.bin`, `reader.bin`, `fault.bin`, `blktest.bin`).
 
 Talos runs isolated `EL0t` payloads inside the 2 MiB user arena (`0x4020_0000`–`0x403F_FFFF`). `user_exec_blob` validates a payload size up to 1 MiB (`0x10_0000`), copies it to `0x4020_0000`, cleans the data cache (`dc cvau`), and invalidates the instruction cache (`ic ivau`) with `dsb ish; isb`. `user_exec` saves the kernel frame on `SP_EL1`, resets the 4-slot per-process file descriptor table, sets `SP_EL0 = 0x403F_F000`, `ELR_EL1 = 0x4020_0000`, and `SPSR_EL1 = 0` (`EL0t`, IRQs unmasked), clears `x0`–`x30`, and executes `eret`. Lower-EL timer IRQs route through vector slot 9 and return to `EL0t` transparently.
 
@@ -84,11 +93,15 @@ User code invokes the kernel via `SVC #0` with the syscall number in `x8` and th
 | `6` | `SYS_CLOSE` | `x0 = fd`. Validates open `fd`, releases the descriptor slot, and returns `0` (or `-1`). |
 | `7` | `SYS_CPU_ID` | Returns the executing CPU ID (`0`–`3`) in `x0`. |
 | `8` | `SYS_SLEEP` | `x0 = ticks`. Sleeps until the tick deadline, or yields when `ticks = 0`. Returns `0` in `x0`. |
+| `9` | `SYS_BLK_READ` | Reads sector `x0` into the 512-byte user buffer at `x1`. Returns `0` on success or `-1` on error. |
+| `10` | `SYS_BLK_WRITE` | Writes the 512-byte user buffer at `x1` to sector `x0`. Returns `0` on success or `-1` on error. |
 | Other | Unknown | Returns `-1` (`0xFFFFFFFFFFFFFFFF`) in `x0`. |
+
+Both block syscalls accept buffer starts from `0x4020_0000` through `0x403F_FE00` inclusive, so the entire sector fits in the user arena.
 
 ## UART0 shell
 
-Run `make run` and enter commands at the `talos> ` prompt. The PL011 line editor echoes up to 127 printable characters. Enter submits the line, Backspace or Delete erases the last character, and Ctrl+C cancels the line. The 100 Hz timer keeps counting while the shell waits for input.
+Run `make run` and enter commands at the `talos> ` prompt. The PL011 line editor accepts up to 543 characters, including spaces and tabs. Enter submits the line, Backspace or Delete erases the last character, and Ctrl+C cancels the line. The 100 Hz timer keeps counting while the shell waits for input.
 
 | Command | Result |
 | --- | --- |
@@ -104,6 +117,9 @@ Run `make run` and enter commands at the `talos> ` prompt. The PL011 line editor
 | `cat <file>` | Looks up `<file>` in `TalosFS` and prints its contents to UART0. |
 | `exec <file>` | Loads an executable (`flags = 1`) from `TalosFS` into the `EL0t` user arena via `user_exec_blob`, runs it, and prints its exit status. |
 | `user [fault]` | Launches `hello.bin` (or `fault.bin` with `fault`) from `TalosFS` in `EL0t` to exercise syscalls and hardware fault isolation. |
+| `blkinfo` | Shows the MMIO base, transport version, capacity in sectors and KiB, and read/write or read-only mode. |
+| `blkread <sec>` | Reads a decimal or `0x`-prefixed hexadecimal sector number and displays its first 64 bytes as eight little-endian 64-bit words. |
+| `blkwrite <sec> <text>` | Writes up to 511 text bytes to the specified sector and zero-fills the rest. Accepts the same sector syntax as `blkread`. |
 | `peek <hex_addr>` | Reads a 64-bit word at an 8-byte-aligned address. Use 1–16 hex digits with an optional `0x` or `0X` prefix. For example, `peek 0x40080000` reads the first word of the kernel image. An unmapped address can trigger a data abort. |
 | `brk` | Executes `BRK #0x42`, prints the exception register dump, and shuts down. |
 | `reboot` | Resets QEMU via PSCI and returns to a fresh shell. |
@@ -121,3 +137,4 @@ Run `make run` and enter commands at the `talos> ` prompt. The PL011 line editor
 - [x] **v0.8.0** — Pure AArch64 read-only in-memory filesystem (`TalosFS` in `src/ramfs.S`), per-process 4-slot file descriptor table, bounds-checked file syscalls (`SYS_OPEN`, `SYS_READ`, `SYS_CLOSE`), dynamic `EL0t` binary loader (`user_exec_blob`), and the `ls`, `cat`, and `exec` shell commands.
 - [x] **v0.9.0** — Four-core Cortex-A72 bring-up via PSCI `CPU_ON`, per-core GICv2 and Generic Timer IRQs, exclusive-monitor UART spinlocks, and the `cpuinfo` shell command.
 - [x] **v0.10.0** — Symmetric four-core scheduling across eight slots, locked stack handoff, GICv2 SGI 0 reschedule IPIs, tick-driven sleep, `SYS_CPU_ID` and `SYS_SLEEP`, and per-CPU migration counters.
+- [x] **v0.11.0** — Persistent VirtIO-Blk storage over modern and legacy MMIO, split virtqueues, bounds-checked EL0 block I/O, and shell commands for sector inspection and writes.
