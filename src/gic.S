@@ -5,6 +5,7 @@
 .equ GICD_CTLR,       0x000
 .equ GICD_ISENABLER,  0x100
 .equ GICD_IPRIORITYR, 0x400
+.equ GICD_SGIR,       0xf00
 .equ GICC_CTLR,       0x000
 .equ GICC_PMR,        0x004
 .equ GICC_IAR,        0x00c
@@ -85,3 +86,16 @@ gic_eoi_irq:
     dsb sy
     ret
 .size gic_eoi_irq, . - gic_eoi_irq
+
+.global gic_send_sgi
+.type gic_send_sgi, %function
+
+// ABI: SGI ID in w0, CPU target mask in w1. Clobbers x0–x2.
+gic_send_sgi:
+    and w0, w0, #0xf
+    bfi w0, w1, #16, #8 // GICD_SGIR.CPUTargetList, TargetListFilter = 0
+    mov x2, #GICD_BASE
+    str w0, [x2, #GICD_SGIR]
+    dsb sy
+    ret
+.size gic_send_sgi, . - gic_send_sgi
