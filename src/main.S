@@ -19,6 +19,7 @@ kmain:
     bl gic_init
     bl timer_init
     bl sched_init
+    bl smp_init
     adr x0, .Lworker_a_name
     adr x1, worker_a_entry
     adr x2, worker_a_count
@@ -53,7 +54,7 @@ worker_entry worker_b_entry
 
 .section .rodata, "a"
 .Lbanner:
-    .asciz "Talos v0.8.0 (aarch64-virt)\nType 'help' for available commands.\n"
+    .asciz "Talos v0.9.0 (aarch64-virt)\nType 'help' for available commands.\n"
 .Lworker_a_name:
     .asciz "worker-a"
 .Lworker_b_name:
