@@ -16,6 +16,7 @@ kmain:
     bl uart_init
     bl exceptions_init
     bl mmu_init
+    bl blk_init
     bl gic_init
     bl timer_init
     bl sched_init
@@ -88,7 +89,7 @@ worker_entry worker_b_entry
 
 .section .rodata, "a"
 .Lbanner:
-    .asciz "Talos v0.10.0 (aarch64-virt)\nType 'help' for available commands.\n"
+    .asciz "Talos v0.11.0 (aarch64-virt)\nType 'help' for available commands.\n"
 .Lworker_a_name:
     .asciz "worker-a"
 .Lworker_b_name:
