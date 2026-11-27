@@ -43,17 +43,27 @@ On Apple Silicon macOS, install QEMU and the LLVM toolchain with `brew install q
 
 ## Four-core SMP
 
-Core 0 builds the identity-mapped page tables, enables the GICv2 distributor, and starts cores 1–3 with PSCI `CPU_ON` over `hvc #0`. Each secondary enters at `secondary_entry` in `src/boot.S` with a dedicated 4 KiB `SP_EL1` stack. In `src/smp.S` it installs its exception vectors and enables the MMU using the shared tables before publishing its online flag with a release store. Core 0 waits up to one second for each successfully started core to report online.
+Core 0 builds the identity-mapped page tables, enables the GICv2 distributor, and starts cores 1–3 with PSCI `CPU_ON` over `hvc #0`. Each secondary enters at `secondary_entry` in `src/boot.S` with a dedicated 4 KiB `SP_EL1` stack. In `src/smp.S` it installs its exception vectors and enables the MMU using the shared tables and registers its pinned idle task before publishing its online flag with a release store. Core 0 waits up to one second for each successfully started core to report online.
 
-Each core enables its banked GICv2 CPU interface, configures PPI 30 in the banked distributor registers, and arms its own 100 Hz physical timer. The IRQ handler increments the core’s slot in `core_ticks[0..3]`. Cores 1–3 return to `wfi` after servicing interrupts. Core 0 runs the task scheduler.
+Each core enables its banked GICv2 CPU interface, configures PPI 30 in the banked distributor registers, and arms its own 100 Hz physical timer. The IRQ handler increments the core’s slot in `core_ticks[0..3]`. All four cores run the scheduler after a timer interrupt or a reschedule IPI. A secondary executes `wfi` in its idle task when it has no other work.
 
 The PL011 driver takes a shared lock once per `uart_putc` call or whole `uart_puts` string. The spinlocks in `src/spinlock.S` use the ARMv8 exclusive monitor (`ldaxr` and `stxr`), wait with `wfe`, and release with `stlr`. During early single-core boot, the lock operations return immediately while the MMU is off.
 
 ## Task scheduler
 
-Talos schedules up to four EL1 tasks in round-robin order. Slot 0 runs the UART shell on the boot stack. Slots 1–3 each have a 4 KiB stack. At boot, `worker-a` and `worker-b` each increment a counter and wait for an interrupt with `wfi`. Only the shell writes to UART0 during normal operation.
+The shared table contains eight 64-byte task control blocks. Each core tracks its running slot in `current_task[0..3]` and scans the table in round-robin order for the next `READY` task whose affinity permits that core.
 
-Every 100 Hz timer interrupt on core 0 charges one tick to the running task. The dispatcher sends the GICv2 end-of-interrupt before the scheduler can switch stacks. Both a timer tick and a cooperative yield select the next ready task and call `context_switch`. It saves `x19`–`x30` in a 96-byte frame on the outgoing task’s `SP_EL1` stack, saves that stack pointer in its task control block, and restores the incoming task’s frame. A new task starts in `task_trampoline`, which unmasks IRQs and calls its entry point with its argument. Returning from the entry point frees the slot for reuse.
+| Slots | Task | CPU affinity | EL1 stack |
+| --- | --- | --- | --- |
+| 0 | `shell` | CPU 0 | Boot stack |
+| 1–3 | `idle-1`, `idle-2`, `idle-3` | Matching secondary CPU | 4 KiB per core in `secondary_stacks` |
+| 4–7 | Dynamically spawned tasks | Any online CPU (`-1`) | 4 KiB per slot in `task_stacks` |
+
+Every scheduler state transition runs with local IRQs masked and `sched_lock` held. The dispatcher acknowledges a timer interrupt or SGI with the original GICv2 IAR value at end-of-interrupt before scheduling. `context_switch` saves `x19`–`x30` in a 96-byte frame and stores the outgoing stack pointer in its TCB. The lock stays held through the stack switch and is released on the incoming stack. This ensures that another core can only claim the outgoing task after its frame is complete. On first dispatch, `task_trampoline` releases the lock before unmasking IRQs and calling the entry point. Returning from that entry frees the slot under the same lock.
+
+`sched_spawn` publishes a ready task and writes SGI 0 with target mask `0x0e` to `GICD_SGIR` (distributor offset `0xF00`). Cores 1–3 can then dispatch the task immediately. `sched_sleep(n)` records a deadline in core 0 timer ticks. Core 0 marks sleepers ready when their deadlines arrive, and any eligible core can resume them. A zero duration yields. When a pinned sleeper must serve as its own core’s fallback, it can service interrupts while waiting for its deadline.
+
+At boot, `worker-a` and `worker-b` record their executing CPU and sleep for one tick per iteration. When secondaries are online, core 0 gives both workers up to 125 ms in total to record their first secondary execution before it enables its own IRQs. The `tasks` command shows per-CPU execution counts for each worker.
 
 ## EL0t user mode, RAMFS, and syscalls
 
@@ -72,6 +82,8 @@ User code invokes the kernel via `SVC #0` with the syscall number in `x8` and th
 | `4` | `SYS_OPEN` | `x0 = path_ptr`. Validates a NUL-terminated path (up to 64 bytes) inside `[0x4020_0000, 0x4040_0000)`, resolves it via `ramfs_lookup`, allocates the lowest free FD slot (`0`–`3`), and returns the descriptor (or `-1`). |
 | `5` | `SYS_READ` | `x0 = fd`, `x1 = buf_ptr`, `x2 = count`. Validates open `fd`, `count <= 4096`, and `[buf_ptr, buf_ptr + count)` within `[0x4020_0000, 0x4040_0000)`, copies up to `min(count, remaining)` bytes, advances the FD offset, and returns bytes read (or `-1`). |
 | `6` | `SYS_CLOSE` | `x0 = fd`. Validates open `fd`, releases the descriptor slot, and returns `0` (or `-1`). |
+| `7` | `SYS_CPU_ID` | Returns the executing CPU ID (`0`–`3`) in `x0`. |
+| `8` | `SYS_SLEEP` | `x0 = ticks`. Sleeps until the tick deadline, or yields when `ticks = 0`. Returns `0` in `x0`. |
 | Other | Unknown | Returns `-1` (`0xFFFFFFFFFFFFFFFF`) in `x0`. |
 
 ## UART0 shell
@@ -82,11 +94,11 @@ Run `make run` and enter commands at the `talos> ` prompt. The PL011 line editor
 | --- | --- |
 | `help` | Lists the built-in commands. |
 | `info` | Prints the kernel version, current exception level, CPU affinity register, vector base, counter frequency in Hz, and interrupt masks. |
-| `cpuinfo` | Prints the online CPU count and each core’s ID, MPIDR, online state, and timer IRQ count. |
+| `cpuinfo` | Prints the online CPU count and each core’s ID, MPIDR, online state, timer IRQ count, and reschedule IPI count (`SGI_IPI`). |
 | `mmu` | Prints `SCTLR_EL1`, `TTBR0_EL1`, `TCR_EL1`, and `MAIR_EL1`, followed by the MMU state. |
 | `ticks` | Prints the number of timer interrupts on core 0 since boot. |
 | `uptime` | Prints uptime in seconds to two decimal places and the corresponding tick count. |
-| `tasks` | Shows each active task’s ID, state, switch-in count, accrued timer ticks, and name, followed by the worker iteration counts. |
+| `tasks` | Shows each active task’s ID, state, last CPU, affinity, switch-in count, ticks charged by timer or SGI dispatch, and name, followed by per-CPU worker execution counts. |
 | `yield` | Hands the CPU to the next ready task and prints a confirmation when the shell resumes. |
 | `ls` | Lists all files in `TalosFS` with their type (`FILE` or `EXEC`), byte size, and name. |
 | `cat <file>` | Looks up `<file>` in `TalosFS` and prints its contents to UART0. |
@@ -108,3 +120,4 @@ Run `make run` and enter commands at the `talos> ` prompt. The PL011 line editor
 - [x] **v0.7.0** — Hardware-isolated 2 MiB `EL0t` user arena (`0x4020_0000`–`0x403F_FFFF`), `eret` trampoline with cache coherency, `SVC #0` syscall dispatcher (`SYS_EXIT`, `SYS_WRITE`, `SYS_GETTICKS`, `SYS_YIELD`), Lower-EL fault recovery, and the `user [fault]` shell command.
 - [x] **v0.8.0** — Pure AArch64 read-only in-memory filesystem (`TalosFS` in `src/ramfs.S`), per-process 4-slot file descriptor table, bounds-checked file syscalls (`SYS_OPEN`, `SYS_READ`, `SYS_CLOSE`), dynamic `EL0t` binary loader (`user_exec_blob`), and the `ls`, `cat`, and `exec` shell commands.
 - [x] **v0.9.0** — Four-core Cortex-A72 bring-up via PSCI `CPU_ON`, per-core GICv2 and Generic Timer IRQs, exclusive-monitor UART spinlocks, and the `cpuinfo` shell command.
+- [x] **v0.10.0** — Symmetric four-core scheduling across eight slots, locked stack handoff, GICv2 SGI 0 reschedule IPIs, tick-driven sleep, `SYS_CPU_ID` and `SYS_SLEEP`, and per-CPU migration counters.
