@@ -60,6 +60,50 @@ irq_dispatch:
     ret
 .size irq_dispatch, . - irq_dispatch
 
+.global el0_sync_dispatch
+.type el0_sync_dispatch, %function
+
+// ABI: Trap frame pointer in x0. Clobbers x0–x8 and NZCV; preserves callee-saved registers.
+el0_sync_dispatch:
+    stp x29, x30, [sp, #-48]!
+    mov x29, sp
+    stp x19, x20, [sp, #16]
+    str x21, [sp, #32]
+    mov x19, x0
+
+    mrs x20, esr_el1
+    ubfx x1, x20, #26, #6 // ESR_EL1.EC
+    cmp x1, #0x15 // SVC from AArch64
+    b.ne .Lel0_fault
+    bl syscall_dispatch
+    ldr x21, [sp, #32]
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #48
+    ret
+
+.Lel0_fault:
+    mrs x21, far_el1
+    adrp x0, .Lel0_fault_esr
+    add x0, x0, :lo12:.Lel0_fault_esr
+    bl uart_puts
+    mov x0, x20
+    bl uart_puthex
+    adrp x0, .Lel0_fault_elr
+    add x0, x0, :lo12:.Lel0_fault_elr
+    bl uart_puts
+    ldr x0, [x19, #256]
+    bl uart_puthex
+    adrp x0, .Lel0_fault_far
+    add x0, x0, :lo12:.Lel0_fault_far
+    bl uart_puts
+    mov x0, x21
+    bl uart_puthex
+    mov w0, #'\n'
+    bl uart_putc
+    mov x0, #-1
+    b user_exit_to_kernel
+.size el0_sync_dispatch, . - el0_sync_dispatch
+
 .global psci_system_off
 .type psci_system_off, %function
 
@@ -252,3 +296,9 @@ panic_exception:
     .asciz "  "
 .Lshutdown:
     .asciz "Halting via PSCI SYSTEM_OFF...\n"
+.Lel0_fault_esr:
+    .asciz "[EL0 fault] ESR_EL1="
+.Lel0_fault_elr:
+    .asciz " ELR_EL1="
+.Lel0_fault_far:
+    .asciz " FAR_EL1="
