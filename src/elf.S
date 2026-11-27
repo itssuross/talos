@@ -1,6 +1,7 @@
 .equ USER_BASE,  0x40200000
 .equ LOAD_LIMIT, 0x403f0000
 .equ PT_LOAD,    1
+.equ PF_X_BIT,   0
 
 .equ E_TYPE,      16
 .equ E_MACHINE,   18
@@ -11,6 +12,7 @@
 .equ E_PHENTSIZE, 54
 .equ E_PHNUM,     56
 
+.equ P_FLAGS,  4
 .equ P_OFFSET, 8
 .equ P_VADDR,  16
 .equ P_FILESZ, 32
@@ -91,20 +93,51 @@ elf64_load:
     ldp x10, x11, [x8, #P_FILESZ]
     cmp x11, x10
     b.lo .Linvalid
-    cbz x11, .Lvalidate_next
     ldr x12, [x8, #P_OFFSET]
     subs x12, x1, x12
     b.lo .Linvalid
     cmp x10, x12
     b.hi .Linvalid
     ldr x12, [x8, #P_VADDR]
+    cbnz x11, .Lvalidate_range
+    cbz x12, .Lvalidate_next
+.Lvalidate_range:
     cmp x12, x6
     b.lo .Linvalid
     cmp x12, x7
-    b.hs .Linvalid
-    sub x12, x7, x12
+    b.hi .Linvalid
+    sub x13, x7, x12
+    cmp x11, x13
+    b.hi .Linvalid
+    cbz x11, .Lvalidate_next
+    add x13, x12, x11
+
+    mov x14, x5
+.Lcheck_overlap:
+    cmp x14, x8
+    b.eq .Lcheck_entry
+    ldr w10, [x14]
+    cmp w10, #PT_LOAD
+    b.ne .Loverlap_next
+    ldr x15, [x14, #P_MEMSZ]
+    cbz x15, .Loverlap_next
+    ldr x10, [x14, #P_VADDR]
+    cmp x10, x13
+    b.hs .Loverlap_next
+    add x11, x10, x15
     cmp x11, x12
     b.hi .Linvalid
+.Loverlap_next:
+    add x14, x14, x3
+    b .Lcheck_overlap
+
+.Lcheck_entry:
+    ldr w10, [x8, #P_FLAGS]
+    tbz w10, #PF_X_BIT, .Lvalidate_next
+    cmp x2, x12
+    b.lo .Lvalidate_next
+    cmp x2, x13
+    b.hs .Lvalidate_next
     mov w9, #1
 .Lvalidate_next:
     add x8, x8, x3
