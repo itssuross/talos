@@ -1,11 +1,19 @@
-.equ USER_BASE,      0x40200000
-.equ USER_END,       0x40400000
-.equ USER_STACK_TOP, 0x403ff000
-.equ SYS_EXIT,       0
-.equ SYS_WRITE,      1
-.equ SYS_GETTICKS,   2
-.equ SYS_YIELD,      3
-.equ SYS_WRITE_MAX,  256
+.equ USER_BASE,        0x40200000
+.equ USER_END,         0x40400000
+.equ USER_CODE_MAX,    0x00100000
+.equ USER_STACK_TOP,   0x403ff000
+.equ SYS_EXIT,         0
+.equ SYS_WRITE,        1
+.equ SYS_GETTICKS,     2
+.equ SYS_YIELD,        3
+.equ SYS_OPEN,         4
+.equ SYS_READ,         5
+.equ SYS_CLOSE,        6
+.equ SYS_WRITE_MAX,    256
+.equ SYS_OPEN_MAX_LEN, 64
+.equ SYS_READ_MAX,     4096
+.equ FD_MAX,           4
+.equ FD_ENTRY_SIZE,    24
 
 .section .bss, "aw", @nobits
 .balign 8
@@ -13,6 +21,9 @@ user_return_sp:
     .quad 0
 user_exit_code:
     .quad 0
+// 4 slots x 24 bytes: +0x00 in_use, +0x08 entry_ptr, +0x10 offset.
+fd_table:
+    .skip 96
 
 .section .text, "ax"
 .global user_exec
@@ -37,6 +48,14 @@ user_exec:
     str x2, [x3, :lo12:user_return_sp]
     adrp x3, user_exit_code
     str xzr, [x3, :lo12:user_exit_code]
+
+    adrp x2, fd_table
+    add x2, x2, :lo12:fd_table
+    mov x3, #12
+.Lzero_fds:
+    str xzr, [x2], #8
+    subs x3, x3, #1
+    b.ne .Lzero_fds
 
     msr sp_el0, x1
     msr elr_el1, x0
@@ -119,6 +138,12 @@ syscall_dispatch:
     b.eq .Lsys_getticks
     cmp x8, #SYS_YIELD
     b.eq .Lsys_yield
+    cmp x8, #SYS_OPEN
+    b.eq .Lsys_open
+    cmp x8, #SYS_READ
+    b.eq .Lsys_read
+    cmp x8, #SYS_CLOSE
+    b.eq .Lsys_close
 
 .Lsys_invalid:
     mov x0, #-1
@@ -161,6 +186,120 @@ syscall_dispatch:
 .Lsys_yield:
     bl sched_yield
     str xzr, [x19, #0]
+    b .Lsys_done
+
+.Lsys_open:
+    ldr x20, [x19, #0]
+    movz x2, #0x4020, lsl #16 // USER_BASE
+    cmp x20, x2
+    b.lo .Lsys_invalid
+    movz x3, #0x4040, lsl #16 // USER_END
+    cmp x20, x3
+    b.hs .Lsys_invalid
+
+    mov x0, x20
+    mov x1, #0
+.Lopen_scan:
+    cmp x0, x3
+    b.hs .Lsys_invalid
+    ldrb w2, [x0], #1
+    cbz w2, .Lopen_nul_ok
+    add x1, x1, #1
+    cmp x1, #SYS_OPEN_MAX_LEN
+    b.lo .Lopen_scan
+    b .Lsys_invalid
+
+.Lopen_nul_ok:
+    mov x0, x20
+    bl ramfs_lookup
+    cbz x0, .Lsys_invalid
+    mov x21, x0
+
+    adrp x1, fd_table
+    add x1, x1, :lo12:fd_table
+    mov x0, #0
+.Lopen_find_fd:
+    ldr x2, [x1, #0]
+    cbz x2, .Lopen_alloc_fd
+    add x1, x1, #FD_ENTRY_SIZE
+    add x0, x0, #1
+    cmp x0, #FD_MAX
+    b.lo .Lopen_find_fd
+    b .Lsys_invalid
+
+.Lopen_alloc_fd:
+    mov x2, #1
+    str x2, [x1, #0]
+    str x21, [x1, #8]
+    str xzr, [x1, #16]
+    str x0, [x19, #0]
+    b .Lsys_done
+
+.Lsys_read:
+    ldp x0, x1, [x19, #0]
+    ldr x2, [x19, #16]
+    cmp x0, #FD_MAX
+    b.hs .Lsys_invalid
+    add x3, x0, x0, lsl #1
+    lsl x3, x3, #3 // fd * 24
+    adrp x4, fd_table
+    add x4, x4, :lo12:fd_table
+    add x4, x4, x3
+    ldr x5, [x4, #0]
+    cmp x5, #1
+    b.ne .Lsys_invalid
+
+    movz x5, #0x4020, lsl #16 // USER_BASE
+    cmp x1, x5
+    b.lo .Lsys_invalid
+    cmp x2, #SYS_READ_MAX
+    b.hi .Lsys_invalid
+    adds x5, x1, x2
+    b.cs .Lsys_invalid
+    movz x6, #0x4040, lsl #16 // USER_END
+    cmp x5, x6
+    b.hi .Lsys_invalid
+
+    ldr x5, [x4, #8]  // entry_ptr
+    ldr x6, [x4, #16] // offset
+    ldr x7, [x5, #16] // entry->size
+    cmp x6, x7
+    b.hs .Lread_eof
+    sub x7, x7, x6
+    cmp x2, x7
+    csel x0, x2, x7, lo
+    ldr x5, [x5, #8]  // entry->data_ptr
+    add x5, x5, x6
+    mov x7, x0
+.Lread_copy:
+    cbz x7, .Lread_done
+    ldrb w3, [x5], #1
+    strb w3, [x1], #1
+    sub x7, x7, #1
+    b .Lread_copy
+.Lread_done:
+    add x6, x6, x0
+    str x6, [x4, #16]
+    str x0, [x19, #0]
+    b .Lsys_done
+.Lread_eof:
+    str xzr, [x19, #0]
+    b .Lsys_done
+
+.Lsys_close:
+    ldr x0, [x19, #0]
+    cmp x0, #FD_MAX
+    b.hs .Lsys_invalid
+    add x1, x0, x0, lsl #1
+    lsl x1, x1, #3 // fd * 24
+    adrp x2, fd_table
+    add x2, x2, :lo12:fd_table
+    add x2, x2, x1
+    ldr x3, [x2, #0]
+    cmp x3, #1
+    b.ne .Lsys_invalid
+    str xzr, [x2, #0]
+    str xzr, [x19, #0]
 
 .Lsys_done:
     ldp x21, x22, [sp, #32]
@@ -169,37 +308,29 @@ syscall_dispatch:
     ret
 .size syscall_dispatch, . - syscall_dispatch
 
-.global user_run_demo
-.type user_run_demo, %function
+.global user_exec_blob
+.type user_exec_blob, %function
 
-// ABI: Mode in x0 (0 = demo, 1 = fault); returns exit code in x0. Clobbers x0–x4 and NZCV.
-user_run_demo:
+// ABI: Code pointer in x0, size in x1; returns exit code in x0 or -1. Clobbers x0–x5 and NZCV.
+user_exec_blob:
+    cbz x0, .Lblob_invalid
+    cbz x1, .Lblob_invalid
+    movz x2, #0x10, lsl #16 // USER_CODE_MAX (1 MiB)
+    cmp x1, x2
+    b.hi .Lblob_invalid
+
     stp x29, x30, [sp, #-16]!
     mov x29, sp
 
-    cbnz x0, .Lselect_fault
-    adrp x0, user_demo_blob
-    add x0, x0, :lo12:user_demo_blob
-    adrp x1, user_demo_blob_end
-    add x1, x1, :lo12:user_demo_blob_end
-    b .Lcopy_setup
-.Lselect_fault:
-    adrp x0, user_fault_blob
-    add x0, x0, :lo12:user_fault_blob
-    adrp x1, user_fault_blob_end
-    add x1, x1, :lo12:user_fault_blob_end
-
-.Lcopy_setup:
     movz x2, #0x4020, lsl #16 // USER_BASE
     mov x3, x2
+    add x5, x2, x1
 .Lcopy_blob:
-    cmp x0, x1
-    b.hs .Lcache_sync
     ldrb w4, [x0], #1
     strb w4, [x3], #1
-    b .Lcopy_blob
+    cmp x3, x5
+    b.lo .Lcopy_blob
 
-.Lcache_sync:
     mov x4, x2
 .Ldc_clean:
     dc cvau, x4
@@ -222,41 +353,40 @@ user_run_demo:
     bl user_exec
     ldp x29, x30, [sp], #16
     ret
+.Lblob_invalid:
+    mov x0, #-1
+    ret
+.size user_exec_blob, . - user_exec_blob
+
+.global user_run_demo
+.type user_run_demo, %function
+
+// ABI: Mode in x0 (0 = hello.bin, 1 = fault.bin); returns exit code in x0. Clobbers x0–x5 and NZCV.
+user_run_demo:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    cbnz x0, .Lselect_fault
+    adrp x0, .Ldemo_hello_name
+    add x0, x0, :lo12:.Ldemo_hello_name
+    b .Ldemo_lookup
+.Lselect_fault:
+    adrp x0, .Ldemo_fault_name
+    add x0, x0, :lo12:.Ldemo_fault_name
+.Ldemo_lookup:
+    bl ramfs_lookup
+    cbz x0, .Ldemo_missing
+    ldp x0, x1, [x0, #8]
+    bl user_exec_blob
+    ldp x29, x30, [sp], #16
+    ret
+.Ldemo_missing:
+    mov x0, #-1
+    ldp x29, x30, [sp], #16
+    ret
 .size user_run_demo, . - user_run_demo
 
 .section .rodata, "a"
-.balign 4
-user_demo_blob:
-    adr x0, .Ldemo_msg1
-    mov x1, #(.Ldemo_msg1_end - .Ldemo_msg1)
-    mov x8, #SYS_WRITE
-    svc #0
-    mov x8, #SYS_GETTICKS
-    svc #0
-    cbz x0, .Ldemo_yield
-    adr x0, .Ldemo_msg2
-    mov x1, #(.Ldemo_msg2_end - .Ldemo_msg2)
-    mov x8, #SYS_WRITE
-    svc #0
-.Ldemo_yield:
-    mov x8, #SYS_YIELD
-    svc #0
-    mov x0, #0
-    mov x8, #SYS_EXIT
-    svc #0
-.Ldemo_msg1:
-    .ascii "Hello from EL0t user space!\n"
-.Ldemo_msg1_end:
-.Ldemo_msg2:
-    .ascii "EL0t observed tick IRQ active\n"
-.Ldemo_msg2_end:
-user_demo_blob_end:
-
-.balign 4
-user_fault_blob:
-    movz x1, #0x4008, lsl #16
-    ldr x0, [x1]
-    mov x0, #1
-    mov x8, #SYS_EXIT
-    svc #0
-user_fault_blob_end:
+.Ldemo_hello_name:
+    .asciz "hello.bin"
+.Ldemo_fault_name:
+    .asciz "fault.bin"
