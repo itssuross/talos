@@ -1,6 +1,6 @@
 # Talos
 
-Talos (`itssuross/talos`) is a hobbyist bare-metal ARM64 kernel written entirely in AArch64 assembly (`.S`), with kernel and userspace linker scripts (`linker.ld` and `user/user.ld`) and a `Makefile`. The kernel uses zero C, zero Rust, and zero external dependencies.
+Talos (`itssuross/talos`) is a bare-metal ARM64 microkernel written 100% in pure AArch64 assembly (`.S`), with kernel and userspace linker scripts (`linker.ld` and `user/user.ld`) and a `Makefile`. The kernel uses zero C, zero Rust, and zero external dependencies. See [docs/ABI.md](docs/ABI.md) for the frozen **v1.0.0** memory map, `SVC #0` syscall table, and executable binary contracts.
 
 ## Target hardware
 
@@ -76,13 +76,13 @@ At boot, `worker-a` and `worker-b` record their executing CPU and sleep for one 
 
 ## EL0t user mode, RAMFS, and syscalls
 
-TalosFS is a read-only filesystem embedded in kernel `.rodata`. Its `ramfs_table` in `src/ramfs.S` holds 32-byte entries (`name_ptr`, `data_ptr`, `size`, `flags`) followed by an all-zero sentinel. It contains two text files (`motd.txt`, `about.txt`), four flat executables (`hello.bin`, `reader.bin`, `fault.bin`, `blktest.bin`), and two ELF64 executables (`echo.elf`, `sysinfo.elf`).
+TalosFS is a read-only filesystem embedded in kernel `.rodata`. Its `ramfs_table` in `src/ramfs.S` holds 32-byte entries (`name_ptr`, `data_ptr`, `size`, `flags`) followed by an all-zero sentinel. It contains two text files (`motd.txt`, `about.txt`), four flat executables (`hello.bin`, `reader.bin`, `fault.bin`, `blktest.bin`), and three ELF64 executables (`echo.elf`, `sysinfo.elf`, `selftest.elf`).
 
-The shell passes executable files to `user_exec_image`, which recognizes ELF images by their four-byte magic. For little-endian AArch64 `ET_EXEC` images, `elf64_load` in `src/elf.S` checks the ELF header, aligned entry address, and program header table. Before writing user RAM, it validates every `PT_LOAD` segment against the file size and the load range `[0x4020_0000, 0x403F_0000)`. It copies each segment to its virtual address, zeroes the trailing `p_memsz - p_filesz` bytes, and synchronizes the data and instruction caches with `dc cvau`, `ic ivau`, and barriers. The top 64 KiB of the user arena is reserved for the stack. For flat files, `user_exec_blob` accepts up to 1 MiB, copies the payload to `0x4020_0000`, and synchronizes the caches.
+The shell passes executable files to `user_exec_image`, which recognizes ELF images by their four-byte magic. For little-endian AArch64 `ET_EXEC` images, `elf64_load` in `src/elf.S` checks the ELF header, aligned entry address, and program header table. Before writing user RAM, it validates every non-empty `PT_LOAD` segment against the file size and the load range `[0x4020_0000, 0x403F_0000)`. It copies each segment to its virtual address, zeroes the trailing `p_memsz - p_filesz` bytes, and synchronizes the data and instruction caches with `dc cvau`, `ic ivau`, and barriers. The top 64 KiB of the user arena is reserved for the stack. For flat files, `user_exec_blob` accepts up to 1 MiB, copies the payload to `0x4020_0000`, and synchronizes the caches.
 
 `user_exec` saves the kernel frame on `SP_EL1`, resets the four file descriptor slots, and sets `SP_EL0 = 0x403F_F000`. It sets `ELR_EL1` to the ELF entry address or flat load address, sets `SPSR_EL1 = 0`, clears `x0`–`x30`, and enters `EL0t` with `eret`. Lower-EL timer IRQs route through vector slot 9 and return to `EL0t`.
 
-The build assembles `user/echo.S` and `user/sysinfo.S` and links each with `user/user.ld` at `0x4020_0000`. Run `exec echo.elf` to echo one byte at a time until Enter or the 62-byte limit. Run `exec sysinfo.elf` to check a 32-byte `.bss` guard and exercise the CPU ID and tick syscalls.
+The build assembles `user/echo.S`, `user/sysinfo.S`, and `user/selftest.S` and links each with `user/user.ld` at `0x4020_0000`. Run `exec echo.elf` to echo one byte at a time until Enter or the 62-byte limit. Run `exec sysinfo.elf` to check a 32-byte `.bss` guard and exercise the CPU ID and tick syscalls. Run `exec selftest.elf` to execute the 14-check adversarial `EL0t` syscall, pointer-bounds, FD-limit, VirtIO-Blk, CPU ID, and timer-sleep self-test suite. See [docs/ABI.md](docs/ABI.md) for the complete frozen ABI specification.
 
 User code invokes the kernel via `SVC #0` with the syscall number in `x8` and the return value in `x0`. Any non-`SVC` synchronous exception from `EL0` (such as a permission fault when accessing kernel memory) logs `ESR_EL1`, `ELR_EL1`, and `FAR_EL1` and unwinds cleanly back to the kernel caller via `user_exit_to_kernel`.
 
@@ -111,6 +111,7 @@ Run `make run` and enter commands at the `talos> ` prompt. The PL011 line editor
 | Command | Result |
 | --- | --- |
 | `help` | Lists the built-in commands. |
+| `version` | Prints the Talos v1.0.0 release banner and frozen ABI v1.0 subsystem summary. |
 | `info` | Prints the kernel version, current exception level, CPU affinity register, vector base, counter frequency in Hz, and interrupt masks. |
 | `cpuinfo` | Prints the online CPU count and each core’s ID, MPIDR, online state, timer IRQ count, and reschedule IPI count (`SGI_IPI`). |
 | `mmu` | Prints `SCTLR_EL1`, `TTBR0_EL1`, `TCR_EL1`, and `MAIR_EL1`, followed by the MMU state. |
@@ -144,3 +145,32 @@ Run `make run` and enter commands at the `talos> ` prompt. The PL011 line editor
 - [x] **v0.10.0** — Symmetric four-core scheduling across eight slots, locked stack handoff, GICv2 SGI 0 reschedule IPIs, tick-driven sleep, `SYS_CPU_ID` and `SYS_SLEEP`, and per-CPU migration counters.
 - [x] **v0.11.0** — Persistent VirtIO-Blk storage over modern and legacy MMIO, split virtqueues, bounds-checked EL0 block I/O, and shell commands for sector inspection and writes.
 - [x] **v0.12.0** — ELF64 `ET_EXEC` loading with bounds-checked `PT_LOAD` segments and zeroed `.bss`, blocking `SYS_GETC` stdin, and standalone assembly programs `echo.elf` and `sysinfo.elf`.
+- [x] **v1.0.0** — Frozen kernel/userspace ABI ([docs/ABI.md](docs/ABI.md)), 14-check adversarial `EL0t` self-test suite (`selftest.elf`), shell `version` command, warm `reboot` persistence verification, and dual-toolchain Clang/LLD + GNU binutils release.
+
+## Architecture (`v1.0.0`)
+
+Every line of Talos is written in pure AArch64 assembly:
+
+| File | Responsibility |
+| --- | --- |
+| `src/boot.S` | EL2-to-EL1h drop, `.bss` zeroing, FP/SIMD enable, secondary CPU entry, PSCI `SYSTEM_OFF` / `SYSTEM_RESET` |
+| `src/main.S` | Boot initialization pipeline, background SMP workers (`worker-a`, `worker-b`), and `v1.0.0` banner |
+| `src/vectors.S` | 16-entry, 2048-byte aligned `VBAR_EL1` exception vector table |
+| `src/exceptions.S` | Synchronous/IRQ trap dispatch, EL1 fault register dump, and isolated Lower-EL fault recovery |
+| `src/mmu.S` | Stage-1 EL1 identity page tables (4 KiB granule, 39-bit VA, 2 MiB blocks, isolated `EL0t` arena) |
+| `src/gic.S` | GICv2 distributor, per-core CPU interfaces, PPI 30 routing, and SGI 0 reschedule IPIs |
+| `src/timer.S` | Per-core 100 Hz ARM Generic Timer (`CNTP`) driver and monotonic tick counters |
+| `src/spinlock.S` | ARMv8 exclusive-monitor (`ldaxr`/`stxr`/`stlr`) spinlocks |
+| `src/smp.S` | 4-core Cortex-A72 bring-up via PSCI `CPU_ON`, online tracking, and per-core SGI counters |
+| `src/sched.S` | 8-slot symmetric SMP round-robin scheduler, locked context switch, and tick-driven sleep |
+| `src/syscall.S` | `EL0t` `eret` trampoline, 12 frozen `SVC #0` syscalls, 4-slot FD table, and image dispatcher |
+| `src/elf.S` | Bounds-checked ELF64 `ET_EXEC` loader (`PT_LOAD`, `.bss` zeroing, D/I cache coherency) |
+| `src/ramfs.S` | Read-only in-memory `TalosFS` (`ramfs_table`, text files, flat `.bin`, and `.incbin` ELF64 images) |
+| `src/virtio_blk.S` | Modern v2 and legacy v1 VirtIO-MMIO block driver with split virtqueue |
+| `src/uart.S` | Spinlock-protected PL011 UART0 TX/RX, decimal, and 64-bit hex I/O |
+| `src/string.S` | String comparison, whitespace skipping, and decimal/hex integer parsers |
+| `src/shell.S` | Interactive UART0 line editor and 20 built-in shell commands |
+| `user/user.ld` | Standalone `EL0t` ELF64 linker script (`0x4020_0000`) |
+| `user/echo.S` | Interactive `EL0t` stdin echo ELF64 binary (`SYS_GETC`, `SYS_WRITE`, `SYS_EXIT`) |
+| `user/sysinfo.S` | `EL0t` ELF64 `.bss` zeroing, `SYS_CPU_ID`, and `SYS_GETTICKS` verification binary |
+| `user/selftest.S` | 14-check adversarial `EL0t` ABI, bounds, FD-limit, VirtIO-Blk, CPU ID, and sleep self-test suite |
