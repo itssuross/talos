@@ -7,7 +7,7 @@ LLVM_OBJCOPY := $(or $(wildcard $(LLVM_PREFIX)/bin/llvm-objcopy),$(shell command
 BUILD := build
 ELF := $(BUILD)/talos.elf
 BIN := $(BUILD)/talos.bin
-SRCS := src/boot.S src/uart.S src/main.S src/vectors.S src/exceptions.S src/gic.S src/timer.S src/string.S src/shell.S src/mmu.S src/sched.S src/syscall.S
+SRCS := src/boot.S src/uart.S src/main.S src/vectors.S src/exceptions.S src/gic.S src/timer.S src/string.S src/shell.S src/mmu.S src/sched.S src/syscall.S src/ramfs.S
 OBJECTS := $(patsubst src/%.S,$(BUILD)/%.o,$(SRCS))
 QEMU ?= qemu-system-aarch64
 QEMU_FLAGS ?= -M virt -cpu cortex-a72 -m 128M -nographic
@@ -49,13 +49,13 @@ test: all
 		: >$(BUILD)/test.log; \
 		( tries=0; until grep -q '^talos> ' $(BUILD)/test.log; do \
 			tries=$$((tries + 1)); test $$tries -lt 100 || exit 1; sleep 0.05; \
-		  done; sleep 0.15; printf 'help\ninfo\nmmu\nticks\nuptime\nyield\ntasks\nuser\nuser fault\npeek 0x40080000\nhalt\n' ) | \
+		  done; sleep 0.15; printf 'help\ninfo\nmmu\nticks\nuptime\nls\ncat motd.txt\nexec reader.bin\nexec hello.bin\nexec fault.bin\nuser\nuser fault\nyield\ntasks\npeek 0x40080000\nhalt\n' ) | \
 		perl -e 'alarm 5; exec @ARGV' $(QEMU) $(QEMU_FLAGS) -serial stdio -monitor none -kernel $(ELF) >$(BUILD)/test.log 2>&1 || status=$$?; \
 		cat $(BUILD)/test.log; \
 		test "$$status" -eq 0 && \
-		grep -Fq "Talos v0.7.0" $(BUILD)/test.log && \
+		grep -Fq "Talos v0.8.0" $(BUILD)/test.log && \
 		grep -q "^talos> help" $(BUILD)/test.log && \
-		grep -q "^Commands: .*mmu.*tasks.*yield.*user \[fault\]" $(BUILD)/test.log && \
+		grep -q "^Commands: .*ls.*cat <file>.*exec <file>.*user \[fault\]" $(BUILD)/test.log && \
 		grep -q "^CurrentEL: 1" $(BUILD)/test.log && \
 		grep -Eq "^SCTLR_EL1: 0x[[:xdigit:]]{16}" $(BUILD)/test.log && \
 		grep -Eq "^TTBR0_EL1: 0x[[:xdigit:]]{13}000" $(BUILD)/test.log && \
@@ -64,6 +64,16 @@ test: all
 		grep -Fq "MMU State: ENABLED (4KiB granule, 39-bit VA, 2MiB blocks)" $(BUILD)/test.log && \
 		grep -q "^Ticks: [0-9]" $(BUILD)/test.log && \
 		grep -q "^Uptime: [0-9]" $(BUILD)/test.log && \
+		grep -Fq "TYPE  SIZE      NAME" $(BUILD)/test.log && \
+		grep -q "motd.txt" $(BUILD)/test.log && \
+		grep -q "Welcome to TalosFS" $(BUILD)/test.log && \
+		test "$$(grep -Fc 'Welcome to TalosFS' $(BUILD)/test.log)" -ge 2 && \
+		grep -q "hello.bin: running in EL0t via exec!" $(BUILD)/test.log && \
+		grep -Fq "Exited with code: 0" $(BUILD)/test.log && \
+		grep -Fq "Exited with code: -1" $(BUILD)/test.log && \
+		grep -Fq "EL0t user process exited with code: 0" $(BUILD)/test.log && \
+		grep -Eq "^\[EL0 fault\] ESR_EL1=0x000000009[23][[:xdigit:]]{6} ELR_EL1=0x0000000040200004 FAR_EL1=0x0000000040080000" $(BUILD)/test.log && \
+		grep -q "EL0t fault isolated; returned to shell." $(BUILD)/test.log && \
 		grep -Fq "Yielded CPU to scheduler." $(BUILD)/test.log && \
 		grep -Fq "ID  STATE    SWITCHES  TICKS     NAME" $(BUILD)/test.log && \
 		grep -Eq "^0 +RUNNING +[1-9][0-9]* +[1-9][0-9]* +shell[[:space:]]*$$" $(BUILD)/test.log && \
@@ -71,11 +81,6 @@ test: all
 		grep -Eq "^2 +READY +[1-9][0-9]* +[1-9][0-9]* +worker-b[[:space:]]*$$" $(BUILD)/test.log && \
 		grep -Eq "^worker-a iterations: [1-9][0-9]*" $(BUILD)/test.log && \
 		grep -Eq "^worker-b iterations: [1-9][0-9]*" $(BUILD)/test.log && \
-		grep -Fq "Hello from EL0t user space!" $(BUILD)/test.log && \
-		grep -Fq "EL0t observed tick IRQ active" $(BUILD)/test.log && \
-		grep -Fq "EL0t user process exited with code: 0" $(BUILD)/test.log && \
-		grep -Eq "^\[EL0 fault\] ESR_EL1=0x000000009[23][[:xdigit:]]{6} ELR_EL1=0x0000000040200004 FAR_EL1=0x0000000040080000" $(BUILD)/test.log && \
-		grep -Fq "EL0t fault isolated; returned to shell." $(BUILD)/test.log && \
 		grep -Eq "^0x0000000040080000: 0x[[:xdigit:]]{16}" $(BUILD)/test.log && \
 		grep -q "Halting via PSCI SYSTEM_OFF" $(BUILD)/test.log
 
