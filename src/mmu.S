@@ -26,7 +26,7 @@ mmu_init:
     cmp x4, #512
     b.lo .Ldevice_block
 
-    ldr x3, =0x40000705 // DRAM base, AF, inner shareable, Attr1, block
+    ldr x3, =0x0040000040000705 // UXN, DRAM base, AF, inner shareable, AP=EL1 RW, Attr1, block
     mov x4, #0
 .Lram_block:
     orr x5, x3, x4, lsl #21
@@ -34,6 +34,9 @@ mmu_init:
     add x4, x4, #1
     cmp x4, #64
     b.lo .Lram_block
+
+    ldr x3, =0x0020000040200745 // PXN, 0x40200000, AF, inner shareable, AP=EL0 RW, Attr1, block
+    str x3, [x2, #8]
 
     orr x1, x1, #3
     orr x2, x2, #3
