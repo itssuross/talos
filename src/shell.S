@@ -113,6 +113,7 @@ shell_run:
     match_command uptime
     match_command tasks
     match_command yield
+    match_command user
     match_command peek
     match_command brk
     match_command reboot
@@ -200,6 +201,30 @@ shell_run:
 .Lcmd_yield:
     bl sched_yield
     puts_label .Lyield_text
+    b .Lprompt
+
+.Lcmd_user:
+    ldrb w0, [x20]
+    cbnz w0, .Luser_check_fault
+    mov x0, #0
+    bl user_run_demo
+    mov x19, x0
+    puts_label .Luser_exited
+    mov x0, x19
+    bl uart_putdec
+    b .Lnewline
+.Luser_check_fault:
+    mov x0, x20
+    adr x1, .Larg_fault
+    bl strcmp
+    cbnz w0, .Luser_usage
+    puts_label .Luser_fault_start
+    mov x0, #1
+    bl user_run_demo
+    puts_label .Luser_fault_done
+    b .Lprompt
+.Luser_usage:
+    puts_label .Luser_usage_text
     b .Lprompt
 
 .Lcmd_tasks:
@@ -309,12 +334,14 @@ shell_run:
 .Lname_uptime:    .asciz "uptime"
 .Lname_tasks:     .asciz "tasks"
 .Lname_yield:     .asciz "yield"
+.Lname_user:      .asciz "user"
+.Larg_fault:      .asciz "fault"
 .Lname_peek:      .asciz "peek"
 .Lname_brk:       .asciz "brk"
 .Lname_reboot:    .asciz "reboot"
 .Lname_halt:      .asciz "halt"
-.Lhelp_text:      .asciz "Commands: help, info, mmu, ticks, uptime, tasks, yield, peek <hex_addr>, brk, reboot, halt\n"
-.Linfo_el:        .asciz "Talos v0.6.0 (aarch64-virt)\nCurrentEL: "
+.Lhelp_text:      .asciz "Commands: help, info, mmu, ticks, uptime, tasks, yield, user [fault], peek <hex_addr>, brk, reboot, halt\n"
+.Linfo_el:        .asciz "Talos v0.7.0 (aarch64-virt)\nCurrentEL: "
 .Lmpidr:          .asciz "\nMPIDR_EL1: "
 .Lvbar:           .asciz "\nVBAR_EL1 : "
 .Lcntfrq:         .asciz "\nCNTFRQ   : "
@@ -334,6 +361,10 @@ shell_run:
 .Ltask_ready:     .asciz "   READY    "
 .Ltask_running:   .asciz "   RUNNING  "
 .Lyield_text:     .asciz "Yielded CPU to scheduler.\n"
+.Luser_exited:    .asciz "EL0t user process exited with code: "
+.Luser_fault_start: .asciz "Launching EL0t fault probe (reading kernel 0x40080000)...\n"
+.Luser_fault_done:  .asciz "EL0t fault isolated; returned to shell.\n"
+.Luser_usage_text:  .asciz "Usage: user [fault]\n"
 .Lworker_a_iterations: .asciz "worker-a iterations: "
 .Lworker_b_iterations: .asciz "\nworker-b iterations: "
 .Lusage:          .asciz "Usage: peek <8-byte-aligned-hex-addr>\n"
