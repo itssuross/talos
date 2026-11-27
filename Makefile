@@ -8,36 +8,50 @@ BUILD := build
 ELF := $(BUILD)/talos.elf
 BIN := $(BUILD)/talos.bin
 DISK := $(BUILD)/disk.img
-SRCS := src/boot.S src/uart.S src/main.S src/vectors.S src/exceptions.S src/gic.S src/timer.S src/string.S src/shell.S src/mmu.S src/sched.S src/syscall.S src/ramfs.S src/spinlock.S src/smp.S src/virtio_blk.S
+SRCS := src/boot.S src/uart.S src/main.S src/vectors.S src/exceptions.S src/gic.S src/timer.S src/string.S src/shell.S src/mmu.S src/sched.S src/syscall.S src/elf.S src/ramfs.S src/spinlock.S src/smp.S src/virtio_blk.S
 OBJECTS := $(patsubst src/%.S,$(BUILD)/%.o,$(SRCS))
+USER_ELFS := $(BUILD)/user/echo.elf $(BUILD)/user/sysinfo.elf
 QEMU ?= qemu-system-aarch64
 QEMU_FLAGS ?= -M virt -cpu cortex-a72 -smp 4 -m 128M -nographic -serial mon:stdio -drive file=$(DISK),format=raw,if=none,id=hd0 -device virtio-blk-device,drive=hd0
 
 ifneq ($(and $(CLANG),$(LLD),$(LLVM_OBJCOPY)),)
 TARGET := --target=aarch64-unknown-none-elf
 ASSEMBLE = "$(CLANG)" $(TARGET) -ffreestanding -Wall -Wextra -Werror -Wa,--fatal-warnings -c
-LINK = "$(CLANG)" $(TARGET) -nostdlib -ffreestanding -fuse-ld=lld --ld-path="$(LLD)" -Wl,--fatal-warnings,-T,linker.ld
+LINK = "$(CLANG)" $(TARGET) -nostdlib -ffreestanding -fuse-ld=lld --ld-path="$(LLD)" -Wl,--fatal-warnings
+USER_LDFLAGS := -Wl,-T,user/user.ld,--build-id=none
+KERNEL_LDFLAGS := -Wl,-T,linker.ld
 OBJCOPY = "$(LLVM_OBJCOPY)"
 else
 AS = aarch64-elf-as
 LD = aarch64-elf-ld
 OBJCOPY = aarch64-elf-objcopy
 ASSEMBLE = $(AS) --fatal-warnings
-LINK = $(LD) --fatal-warnings -T linker.ld
+LINK = $(LD) --fatal-warnings
+USER_LDFLAGS := -T user/user.ld --build-id=none
+KERNEL_LDFLAGS := -T linker.ld
 endif
 
 .PHONY: all run test clean
 
 all: $(ELF) $(BIN)
 
-$(BUILD):
+$(BUILD) $(BUILD)/user:
 	mkdir -p $@
 
 $(BUILD)/%.o: src/%.S | $(BUILD)
 	$(ASSEMBLE) $< -o $@
 
+$(BUILD)/user/%.o: user/%.S | $(BUILD)/user
+	$(ASSEMBLE) $< -o $@
+
+$(BUILD)/user/%.elf: $(BUILD)/user/%.o user/user.ld
+	$(LINK) $(USER_LDFLAGS) $< -o $@
+
+$(BUILD)/ramfs.o: src/ramfs.S $(USER_ELFS) | $(BUILD)
+	$(ASSEMBLE) -I$(BUILD) $< -o $@
+
 $(ELF): linker.ld $(OBJECTS)
-	$(LINK) $(OBJECTS) -o $@
+	$(LINK) $(KERNEL_LDFLAGS) $(OBJECTS) -o $@
 
 $(BIN): $(ELF)
 	$(OBJCOPY) -O binary $< $@
@@ -53,11 +67,12 @@ test: all $(DISK)
 		: >$(BUILD)/test.log; \
 		( tries=0; until grep -q '^talos> ' $(BUILD)/test.log; do \
 			tries=$$((tries + 1)); test $$tries -lt 100 || exit 1; sleep 0.05; \
-		  done; sleep 0.15; printf 'help\ninfo\ncpuinfo\nmmu\nticks\nuptime\nls\ncat motd.txt\nexec reader.bin\nexec hello.bin\nexec fault.bin\nuser\nuser fault\nyield\ntasks\npeek 0x40080000\nblkinfo\nblkwrite 0 TalosDiskOK\nblkread 0\nexec blktest.bin\nhalt\n' ) | \
+		  done; sleep 0.15; printf 'ticks\nuptime\nuser\nuser fault\n'; \
+		  printf 'help\ninfo\ncpuinfo\nmmu\nblkinfo\nblkwrite 0 TalosDiskOK\nblkread 0\nls\ncat motd.txt\nexec sysinfo.elf\nexec echo.elf\nhello-stdin\nexec reader.bin\nexec hello.bin\nexec blktest.bin\nexec fault.bin\nyield\ntasks\npeek 0x40080000\nhalt\n' ) | \
 		perl -e 'alarm 5; exec @ARGV' $(QEMU) $(QEMU_FLAGS) -kernel $(ELF) >$(BUILD)/test.log 2>&1 || status=$$?; \
 		cat $(BUILD)/test.log; \
 		test "$$status" -eq 0 && \
-		grep -Fq "Talos v0.11.0" $(BUILD)/test.log && \
+		grep -Fq "Talos v0.12.0" $(BUILD)/test.log && \
 		grep -q "^talos> help" $(BUILD)/test.log && \
 		grep -q "^Commands: .*cpuinfo.*ls.*cat <file>.*exec <file>.*user \[fault\]" $(BUILD)/test.log && \
 		grep -q "^CurrentEL: 1" $(BUILD)/test.log && \
@@ -78,6 +93,12 @@ test: all $(DISK)
 		grep -q "motd.txt" $(BUILD)/test.log && \
 		grep -q "Welcome to TalosFS" $(BUILD)/test.log && \
 		test "$$(grep -Fc 'Welcome to TalosFS' $(BUILD)/test.log)" -ge 2 && \
+		grep -q '^sysinfo\.elf: ELF64 PT_LOAD + \.bss zeroing verified!' $(BUILD)/test.log && \
+		grep -q '^echo\.elf: line echoed, exiting!' $(BUILD)/test.log && \
+		grep -q '^hello-stdin[[:space:]]*$$' $(BUILD)/test.log && \
+		awk '/^talos> exec (sysinfo|echo)\.elf[[:space:]]*$$/ { pending = 1; next } \
+			/^talos> / { pending = 0 } pending && /^Exited with code: 0[[:space:]]*$$/ { ok++; pending = 0 } \
+			END { exit (ok != 2) }' $(BUILD)/test.log && \
 		grep -q "hello.bin: running in EL0t via exec!" $(BUILD)/test.log && \
 		grep -Fq "Exited with code: 0" $(BUILD)/test.log && \
 		grep -Fq "Exited with code: -1" $(BUILD)/test.log && \
