@@ -57,3 +57,50 @@ _start:
     b .Lpark
 
 .size _start, . - _start
+
+.global secondary_entry
+.type secondary_entry, %function
+
+// ABI: PSCI context ID in x0. Initializes sp and never returns.
+secondary_entry:
+    msr daifset, #0xf
+    mrs x1, CurrentEL
+    cmp x1, #0x8
+    b.ne .Lsec_el1
+
+    mov x1, #(1 << 31) // HCR_EL2.RW
+    msr hcr_el2, x1
+    mrs x1, cnthctl_el2
+    orr x1, x1, #3 // EL1PCTEN, EL1PCEN
+    msr cnthctl_el2, x1
+    mov x1, #0x3c5 // EL1h with DAIF masked
+    msr spsr_el2, x1
+    adr x1, .Lsec_el1
+    msr elr_el2, x1
+    eret
+
+.Lsec_el1:
+    msr spsel, #1
+    isb
+    mrs x1, cpacr_el1
+    orr x1, x1, #(3 << 20) // CPACR_EL1.FPEN
+    msr cpacr_el1, x1
+    isb
+    mrs x0, mpidr_el1
+    and x0, x0, #0xff
+    cbz x0, .Lpark
+    cmp x0, #3
+    b.hi .Lpark
+    adr x1, secondary_stacks
+    add x1, x1, x0, lsl #12
+    mov sp, x1
+    mov x29, xzr
+    mov x30, xzr
+    bl smp_secondary_main
+    b .Lpark
+.size secondary_entry, . - secondary_entry
+
+.section .bss, "aw", @nobits
+.balign 16
+secondary_stacks:
+    .skip 12288
