@@ -9,6 +9,8 @@
 .equ SYS_OPEN,         4
 .equ SYS_READ,         5
 .equ SYS_CLOSE,        6
+.equ SYS_CPU_ID,       7
+.equ SYS_SLEEP,        8
 .equ SYS_WRITE_MAX,    256
 .equ SYS_OPEN_MAX_LEN, 64
 .equ SYS_READ_MAX,     4096
@@ -121,7 +123,7 @@ user_exit_to_kernel:
 .global syscall_dispatch
 .type syscall_dispatch, %function
 
-// ABI: Trap frame pointer in x0. Clobbers x0–x8 and NZCV; preserves callee-saved registers.
+// ABI: Trap frame pointer in x0. Clobbers caller-saved registers and NZCV.
 syscall_dispatch:
     stp x29, x30, [sp, #-48]!
     mov x29, sp
@@ -144,6 +146,10 @@ syscall_dispatch:
     b.eq .Lsys_read
     cmp x8, #SYS_CLOSE
     b.eq .Lsys_close
+    cmp x8, #SYS_CPU_ID
+    b.eq .Lsys_cpu_id
+    cmp x8, #SYS_SLEEP
+    b.eq .Lsys_sleep
 
 .Lsys_invalid:
     mov x0, #-1
@@ -186,6 +192,18 @@ syscall_dispatch:
 .Lsys_yield:
     bl sched_yield
     str xzr, [x19, #0]
+    b .Lsys_done
+
+.Lsys_cpu_id:
+    mrs x1, mpidr_el1
+    and x1, x1, #0xff
+    str x1, [x19]
+    b .Lsys_done
+
+.Lsys_sleep:
+    ldr x0, [x19]
+    bl sched_sleep
+    str xzr, [x19]
     b .Lsys_done
 
 .Lsys_open:
