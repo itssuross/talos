@@ -118,3 +118,30 @@ uart_puthex:
     ldp x29, x30, [sp], #32
     ret
 .size uart_puthex, . - uart_puthex
+
+.global uart_putdec
+.type uart_putdec, %function
+
+// ABI: Unsigned 64-bit value in x0. Clobbers x0–x4 and NZCV.
+uart_putdec:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    sub sp, sp, #32
+    add x1, sp, #31
+    strb wzr, [x1]
+    mov x2, #10
+
+.Ldec_digit:
+    udiv x3, x0, x2
+    msub x4, x3, x2, x0
+    add w4, w4, #'0'
+    strb w4, [x1, #-1]!
+    mov x0, x3
+    cbnz x0, .Ldec_digit
+
+    mov x0, x1
+    bl uart_puts
+    add sp, sp, #32
+    ldp x29, x30, [sp], #16
+    ret
+.size uart_putdec, . - uart_putdec
