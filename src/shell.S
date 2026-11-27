@@ -111,6 +111,8 @@ shell_run:
     match_command mmu
     match_command ticks
     match_command uptime
+    match_command tasks
+    match_command yield
     match_command peek
     match_command brk
     match_command reboot
@@ -195,6 +197,51 @@ shell_run:
     puts_label .Lticks_suffix
     b .Lprompt
 
+.Lcmd_yield:
+    bl sched_yield
+    puts_label .Lyield_text
+    b .Lprompt
+
+.Lcmd_tasks:
+    puts_label .Ltasks_header
+    mov x19, #0
+.Ltask_row:
+    mov x0, x19
+    bl sched_get_tcb
+    mov x20, x0
+    ldr x1, [x20, #8]
+    cbz x1, .Lnext_task
+    cmp x1, #2
+    adr x1, .Ltask_running
+    adr x2, .Ltask_ready
+    csel x21, x1, x2, eq
+    ldp x22, x23, [x20, #24]
+    ldr x0, [x20, #16]
+    bl uart_putdec
+    mov x0, x21
+    bl uart_puts
+    mov x0, x22
+    bl .Lput_task_number
+    mov x0, x23
+    bl .Lput_task_number
+    ldr x0, [x20, #40]
+    bl uart_puts
+    mov w0, #10
+    bl uart_putc
+.Lnext_task:
+    add x19, x19, #1
+    cmp x19, #4
+    b.lo .Ltask_row
+    puts_label .Lworker_a_iterations
+    adrp x0, worker_a_count
+    ldr x0, [x0, :lo12:worker_a_count]
+    bl uart_putdec
+    puts_label .Lworker_b_iterations
+    adrp x0, worker_b_count
+    ldr x0, [x0, :lo12:worker_b_count]
+    bl uart_putdec
+    b .Lnewline
+
 .Lcmd_peek:
     mov x0, x20
     bl parse_hex64
@@ -227,6 +274,28 @@ shell_run:
     b psci_system_off
 .size shell_run, . - shell_run
 
+// ABI: Decimal value in x0. Clobbers x0–x4 and NZCV.
+.Lput_task_number:
+    stp x19, x30, [sp, #-16]!
+    mov x19, #10
+    mov x1, x0
+    mov x2, #10
+.Lcount_digits:
+    sub x19, x19, #1
+    udiv x1, x1, x2
+    cbz x1, .Lprint_number
+    cmp x19, #1
+    b.hi .Lcount_digits
+.Lprint_number:
+    bl uart_putdec
+.Lpad_number:
+    mov w0, #' '
+    bl uart_putc
+    subs x19, x19, #1
+    b.ne .Lpad_number
+    ldp x19, x30, [sp], #16
+    ret
+
 .section .rodata, "a"
 .Lprompt_text:    .asciz "talos> "
 .Lerase:          .asciz "\b \b"
@@ -238,12 +307,14 @@ shell_run:
 .Lname_mmu:       .asciz "mmu"
 .Lname_ticks:     .asciz "ticks"
 .Lname_uptime:    .asciz "uptime"
+.Lname_tasks:     .asciz "tasks"
+.Lname_yield:     .asciz "yield"
 .Lname_peek:      .asciz "peek"
 .Lname_brk:       .asciz "brk"
 .Lname_reboot:    .asciz "reboot"
 .Lname_halt:      .asciz "halt"
-.Lhelp_text:      .asciz "Commands: help, info, mmu, ticks, uptime, peek <hex_addr>, brk, reboot, halt\n"
-.Linfo_el:        .asciz "Talos v0.5.0 (aarch64-virt)\nCurrentEL: "
+.Lhelp_text:      .asciz "Commands: help, info, mmu, ticks, uptime, tasks, yield, peek <hex_addr>, brk, reboot, halt\n"
+.Linfo_el:        .asciz "Talos v0.6.0 (aarch64-virt)\nCurrentEL: "
 .Lmpidr:          .asciz "\nMPIDR_EL1: "
 .Lvbar:           .asciz "\nVBAR_EL1 : "
 .Lcntfrq:         .asciz "\nCNTFRQ   : "
@@ -259,6 +330,12 @@ shell_run:
 .Lseconds_suffix: .asciz "s ("
 .Lticks_suffix:   .asciz " ticks)\n"
 .Lseparator:      .asciz ": "
+.Ltasks_header:   .asciz "ID  STATE    SWITCHES  TICKS     NAME\n"
+.Ltask_ready:     .asciz "   READY    "
+.Ltask_running:   .asciz "   RUNNING  "
+.Lyield_text:     .asciz "Yielded CPU to scheduler.\n"
+.Lworker_a_iterations: .asciz "worker-a iterations: "
+.Lworker_b_iterations: .asciz "\nworker-b iterations: "
 .Lusage:          .asciz "Usage: peek <8-byte-aligned-hex-addr>\n"
 .Lbrk_text:       .asciz "Triggering BRK #0x42...\n"
 .Lreboot_text:    .asciz "Rebooting via PSCI SYSTEM_RESET...\n"
