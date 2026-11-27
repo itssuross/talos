@@ -108,6 +108,7 @@ shell_run:
     mov x20, x0
     match_command help
     match_command info
+    match_command mmu
     match_command ticks
     match_command uptime
     match_command peek
@@ -143,6 +144,27 @@ shell_run:
     mrs x0, daif
     bl uart_puthex
     b .Lnewline
+
+.Lcmd_mmu:
+    puts_label .Lsctlr
+    mrs x19, sctlr_el1
+    mov x0, x19
+    bl uart_puthex
+    puts_label .Lttbr0
+    mrs x0, ttbr0_el1
+    bl uart_puthex
+    puts_label .Ltcr
+    mrs x0, tcr_el1
+    bl uart_puthex
+    puts_label .Lmair
+    mrs x0, mair_el1
+    bl uart_puthex
+    tst x19, #1
+    adr x0, .Lmmu_enabled
+    adr x1, .Lmmu_disabled
+    csel x0, x0, x1, ne
+    bl uart_puts
+    b .Lprompt
 
 .Lcmd_ticks:
     puts_label .Lticks_text
@@ -213,18 +235,25 @@ shell_run:
 .Lhint:           .asciz " (type 'help')\n"
 .Lname_help:      .asciz "help"
 .Lname_info:      .asciz "info"
+.Lname_mmu:       .asciz "mmu"
 .Lname_ticks:     .asciz "ticks"
 .Lname_uptime:    .asciz "uptime"
 .Lname_peek:      .asciz "peek"
 .Lname_brk:       .asciz "brk"
 .Lname_reboot:    .asciz "reboot"
 .Lname_halt:      .asciz "halt"
-.Lhelp_text:      .asciz "Commands: help, info, ticks, uptime, peek <hex_addr>, brk, reboot, halt\n"
-.Linfo_el:        .asciz "Talos v0.4.0 (aarch64-virt)\nCurrentEL: "
+.Lhelp_text:      .asciz "Commands: help, info, mmu, ticks, uptime, peek <hex_addr>, brk, reboot, halt\n"
+.Linfo_el:        .asciz "Talos v0.5.0 (aarch64-virt)\nCurrentEL: "
 .Lmpidr:          .asciz "\nMPIDR_EL1: "
 .Lvbar:           .asciz "\nVBAR_EL1 : "
 .Lcntfrq:         .asciz "\nCNTFRQ   : "
 .Lhz_daif:        .asciz " Hz\nDAIF     : "
+.Lsctlr:          .asciz "SCTLR_EL1: "
+.Lttbr0:          .asciz "\nTTBR0_EL1: "
+.Ltcr:            .asciz "\nTCR_EL1  : "
+.Lmair:           .asciz "\nMAIR_EL1 : "
+.Lmmu_enabled:    .asciz "\nMMU State: ENABLED (4KiB granule, 39-bit VA, 2MiB blocks)\n"
+.Lmmu_disabled:   .asciz "\nMMU State: DISABLED\n"
 .Lticks_text:     .asciz "Ticks: "
 .Luptime_text:    .asciz "Uptime: "
 .Lseconds_suffix: .asciz "s ("
