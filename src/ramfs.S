@@ -5,6 +5,8 @@
 .equ SYS_OPEN,     4
 .equ SYS_READ,     5
 .equ SYS_CLOSE,    6
+.equ SYS_BLK_READ, 9
+.equ SYS_BLK_WRITE, 10
 
 .section .text, "ax"
 
@@ -74,6 +76,7 @@ ramfs_table:
     .quad .Lname_hello,  .Lfile_hello_start,  .Lfile_hello_end - .Lfile_hello_start,   1
     .quad .Lname_reader, .Lfile_reader_start, .Lfile_reader_end - .Lfile_reader_start, 1
     .quad .Lname_fault,  .Lfile_fault_start,  .Lfile_fault_end - .Lfile_fault_start,   1
+    .quad .Lname_blktest, .Lfile_blktest_start, .Lfile_blktest_end - .Lfile_blktest_start, 1
     .quad 0, 0, 0, 0
 
 .Lname_motd:
@@ -86,6 +89,9 @@ ramfs_table:
     .asciz "reader.bin"
 .Lname_fault:
     .asciz "fault.bin"
+
+.Lname_blktest:
+    .asciz "blktest.bin"
 
 .Lfile_motd_start:
     .ascii "Welcome to TalosFS (100% pure AArch64 RAMFS)!\n"
@@ -157,3 +163,56 @@ ramfs_table:
     mov x8, #SYS_EXIT
     svc #0
 .Lfile_fault_end:
+
+.balign 8
+.Lfile_blktest_start:
+    sub sp, sp, #512
+    bl .Lblktest_clear
+    adr x19, .Lblktest_pattern
+    ldp x20, x21, [x19]
+    stp x20, x21, [sp]
+    mov x0, #1
+    mov x1, sp
+    mov x8, #SYS_BLK_WRITE
+    svc #0
+    cbnz x0, .Lblktest_error
+
+    bl .Lblktest_clear
+    mov x0, #1
+    mov x1, sp
+    mov x8, #SYS_BLK_READ
+    svc #0
+    cbnz x0, .Lblktest_error
+    ldp x2, x3, [sp]
+    cmp x2, x20
+    ccmp x3, x21, #0, eq
+    b.ne .Lblktest_error
+    adr x0, .Lblktest_msg
+    mov x1, #(.Lfile_blktest_end - .Lblktest_msg)
+    mov x8, #SYS_WRITE
+    svc #0
+    mov x0, #0
+    b .Lblktest_exit
+.Lblktest_error:
+    mov x0, #1
+.Lblktest_exit:
+    add sp, sp, #512
+    mov x8, #SYS_EXIT
+    svc #0
+
+// ABI: Clears the 512-byte sector at SP. Clobbers x2–x3 and NZCV.
+.Lblktest_clear:
+    mov x2, sp
+    add x3, x2, #512
+.Lblktest_clear_next:
+    stp xzr, xzr, [x2], #16
+    cmp x2, x3
+    b.lo .Lblktest_clear_next
+    ret
+
+.balign 8
+.Lblktest_pattern:
+    .ascii "TALOS-EL0-BLK-OK"
+.Lblktest_msg:
+    .ascii "blktest.bin: VirtIO-Blk EL0 read/write verified!\n"
+.Lfile_blktest_end:
