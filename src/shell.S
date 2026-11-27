@@ -1,9 +1,12 @@
-.equ SHELL_CAPACITY, 128
+.equ SHELL_CAPACITY, 544
 
 .section .bss, "aw", @nobits
 .balign 8
 shell_buf:
     .skip SHELL_CAPACITY
+.balign 16
+shell_sector_buf:
+    .skip 512
 
 .section .text, "ax"
 
@@ -40,10 +43,13 @@ shell_readline:
     b.eq .Lread_erase
     cmp w0, #3
     b.eq .Lread_cancel
+    cmp w0, #9
+    b.eq .Lread_append
     cmp w0, #0x20
     b.lo .Lread_byte
     cmp w0, #0x7e
     b.hi .Lread_byte
+.Lread_append:
     cmp x21, x20
     b.hs .Lread_byte
     strb w0, [x19, x21]
@@ -118,6 +124,9 @@ shell_run:
     match_command cat
     match_command exec
     match_command user
+    match_command blkinfo
+    match_command blkread
+    match_command blkwrite
     match_command peek
     match_command brk
     match_command reboot
@@ -409,6 +418,126 @@ shell_run:
     bl .Lput_cpu_hits
     b .Lprompt
 
+.Lcmd_blkinfo:
+    sub sp, sp, #32
+    mov x0, sp
+    bl blk_get_info
+    ldp x19, x20, [sp]
+    ldp w21, w22, [sp, #16]
+    add sp, sp, #32
+    cbz w0, .Lblk_absent
+    puts_label .Lblk_mmio
+    mov x0, x19
+    bl uart_puthex
+    puts_label .Lblk_version
+    mov w0, w21
+    bl uart_putdec
+    puts_label .Lblk_capacity
+    mov x0, x20
+    bl uart_putdec
+    puts_label .Lblk_sectors
+    lsr x0, x20, #1
+    bl uart_putdec
+    puts_label .Lblk_kib
+    adr x0, .Lblk_rw
+    adr x1, .Lblk_ro
+    cmp w22, #0
+    csel x0, x0, x1, eq
+    bl uart_puts
+    b .Lprompt
+.Lblk_absent:
+    puts_label .Lblk_missing
+    b .Lprompt
+
+.Lcmd_blkread:
+    mov w21, #0
+    b .Lblk_args
+.Lcmd_blkwrite:
+    mov w21, #1
+.Lblk_args:
+    mov x0, x20
+    bl parse_u64
+    cbz x1, .Lblk_bad_args
+    mov x19, x0
+.Lblk_arg_end:
+    ldrb w1, [x20]
+    cbz w1, .Lblk_text
+    cmp w1, #' '
+    b.eq .Lblk_text
+    cmp w1, #9
+    b.eq .Lblk_text
+    add x20, x20, #1
+    b .Lblk_arg_end
+.Lblk_text:
+    mov x0, x20
+    bl skip_spaces
+    mov x20, x0
+    ldrb w2, [x20]
+    adr x22, shell_sector_buf
+    cbnz w21, .Lblk_write
+    cbnz w2, .Lblk_bad_args
+    mov x0, x19
+    mov x1, x22
+    bl blk_read_sector
+    cbnz x0, .Lblk_read_error
+    mov x19, #0
+.Lblk_dump:
+    puts_label .Lblk_hex_prefix
+    lsr w0, w19, #4
+    add w0, w0, #'0'
+    bl uart_putc
+    and w0, w19, #15
+    add w0, w0, #'0'
+    bl uart_putc
+    puts_label .Lseparator
+    ldr x0, [x22, x19]
+    bl uart_puthex
+    mov w0, #10
+    bl uart_putc
+    add x19, x19, #8
+    cmp x19, #64
+    b.lo .Lblk_dump
+    b .Lprompt
+.Lblk_write:
+    cbz w2, .Lblk_bad_args
+    mov x1, x22
+    add x2, x22, #512
+.Lblk_zero:
+    stp xzr, xzr, [x1], #16
+    cmp x1, x2
+    b.lo .Lblk_zero
+    mov x1, x22
+    sub x2, x2, #1
+.Lblk_copy:
+    ldrb w3, [x20], #1
+    cbz w3, .Lblk_submit
+    strb w3, [x1], #1
+    cmp x1, x2
+    b.lo .Lblk_copy
+.Lblk_submit:
+    mov x0, x19
+    mov x1, x22
+    bl blk_write_sector
+    cbnz x0, .Lblk_write_error
+    puts_label .Lblk_wrote
+    mov x0, x19
+    bl uart_putdec
+    puts_label .Lblk_period
+    b .Lprompt
+.Lblk_bad_args:
+    adr x0, .Lblk_read_usage
+    adr x1, .Lblk_write_usage
+    cmp w21, #0
+    csel x0, x0, x1, eq
+    bl uart_puts
+    b .Lprompt
+.Lblk_read_error:
+    puts_label .Lblk_read_failed
+    b .Lprompt
+.Lblk_write_error:
+    puts_label .Lblk_write_failed
+    b .Lprompt
+
 .Lcmd_peek:
     mov x0, x20
     bl parse_hex64
@@ -498,12 +627,15 @@ shell_run:
 .Lname_exec:      .asciz "exec"
 .Lname_user:      .asciz "user"
 .Larg_fault:      .asciz "fault"
+.Lname_blkinfo:   .asciz "blkinfo"
+.Lname_blkread:   .asciz "blkread"
+.Lname_blkwrite:  .asciz "blkwrite"
 .Lname_peek:      .asciz "peek"
 .Lname_brk:       .asciz "brk"
 .Lname_reboot:    .asciz "reboot"
 .Lname_halt:      .asciz "halt"
-.Lhelp_text:      .asciz "Commands: help, info, cpuinfo, mmu, ticks, uptime, tasks, yield, ls, cat <file>, exec <file>, user [fault], peek <hex_addr>, brk, reboot, halt\n"
-.Linfo_el:        .asciz "Talos v0.10.0 (aarch64-virt)\nCurrentEL: "
+.Lhelp_text:      .asciz "Commands: help, info, cpuinfo, mmu, ticks, uptime, tasks, yield, ls, cat <file>, exec <file>, user [fault], blkinfo, blkread <sec>, blkwrite <sec> <text>, peek <hex_addr>, brk, reboot, halt\n"
+.Linfo_el:        .asciz "Talos v0.11.0 (aarch64-virt)\nCurrentEL: "
 .Lmpidr:          .asciz "\nMPIDR_EL1: "
 .Lvbar:           .asciz "\nVBAR_EL1 : "
 .Lcntfrq:         .asciz "\nCNTFRQ   : "
@@ -551,3 +683,18 @@ shell_run:
 .Lbrk_text:       .asciz "Triggering BRK #0x42...\n"
 .Lreboot_text:    .asciz "Rebooting via PSCI SYSTEM_RESET...\n"
 .Lhalt_text:      .asciz "Halting via PSCI SYSTEM_OFF...\n"
+.Lblk_mmio:         .asciz "VirtIO-Blk MMIO: "
+.Lblk_version:      .asciz "  Version: "
+.Lblk_capacity:     .asciz "\nCapacity: "
+.Lblk_sectors:      .asciz " sectors ("
+.Lblk_kib:          .asciz " KiB)  Mode: "
+.Lblk_rw:           .asciz "RW\n"
+.Lblk_ro:           .asciz "RO\n"
+.Lblk_missing:      .asciz "VirtIO-Blk: not attached\n"
+.Lblk_hex_prefix:   .asciz "0x"
+.Lblk_wrote:        .asciz "Wrote sector "
+.Lblk_period:       .asciz ".\n"
+.Lblk_read_usage:   .asciz "Usage: blkread <sec>\n"
+.Lblk_write_usage:  .asciz "Usage: blkwrite <sec> <text>\n"
+.Lblk_read_failed:  .asciz "blkread: read failed\n"
+.Lblk_write_failed: .asciz "blkwrite: write failed\n"
