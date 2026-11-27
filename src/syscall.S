@@ -13,6 +13,7 @@
 .equ SYS_SLEEP,        8
 .equ SYS_BLK_READ,     9
 .equ SYS_BLK_WRITE,    10
+.equ SYS_GETC,         11
 .equ SYS_WRITE_MAX,    256
 .equ SYS_OPEN_MAX_LEN, 64
 .equ SYS_READ_MAX,     4096
@@ -156,6 +157,8 @@ syscall_dispatch:
     b.eq .Lsys_blk
     cmp x8, #SYS_BLK_WRITE
     b.eq .Lsys_blk
+    cmp x8, #SYS_GETC
+    b.eq .Lsys_getc
 
 .Lsys_invalid:
     mov x0, #-1
@@ -188,6 +191,14 @@ syscall_dispatch:
     b .Lwrite_loop
 .Lwrite_done:
     str x21, [x19, #0]
+    b .Lsys_done
+
+.Lsys_getc:
+    bl irq_enable
+    bl uart_getc
+    mov w20, w0
+    bl irq_disable
+    str x20, [x19, #0]
     b .Lsys_done
 
 .Lsys_getticks:
@@ -350,6 +361,35 @@ syscall_dispatch:
     ldp x29, x30, [sp], #48
     ret
 .size syscall_dispatch, . - syscall_dispatch
+
+.global user_exec_image
+.type user_exec_image, %function
+
+// ABI: Image at x0 of size x1. Returns exit code or -1 in x0. Clobbers caller-saved registers and NZCV.
+user_exec_image:
+    cbz x0, .Limage_invalid
+    cmp x1, #4
+    b.lo user_exec_blob
+    ldr w2, [x0]
+    movz w3, #0x457f
+    movk w3, #0x464c, lsl #16
+    cmp w2, w3
+    b.ne user_exec_blob
+
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    bl elf64_load
+    cbz x0, .Limage_load_failed
+    ldr x1, =USER_STACK_TOP
+    bl user_exec
+    ldp x29, x30, [sp], #16
+    ret
+.Limage_load_failed:
+    ldp x29, x30, [sp], #16
+.Limage_invalid:
+    mov x0, #-1
+    ret
+.size user_exec_image, . - user_exec_image
 
 .global user_exec_blob
 .type user_exec_blob, %function
