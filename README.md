@@ -1,6 +1,6 @@
 # Talos
 
-Talos (`itssuross/talos`) is a hobbyist bare-metal ARM64 kernel written entirely in AArch64 assembly (`.S`), with a linker script (`linker.ld`) and a `Makefile`. The kernel uses zero C, zero Rust, and zero external dependencies.
+Talos (`itssuross/talos`) is a hobbyist bare-metal ARM64 kernel written entirely in AArch64 assembly (`.S`), with kernel and userspace linker scripts (`linker.ld` and `user/user.ld`) and a `Makefile`. The kernel uses zero C, zero Rust, and zero external dependencies.
 
 ## Target hardware
 
@@ -76,9 +76,13 @@ At boot, `worker-a` and `worker-b` record their executing CPU and sleep for one 
 
 ## EL0t user mode, RAMFS, and syscalls
 
-Talos includes a read-only in-memory filesystem (`TalosFS` in `src/ramfs.S`) stored in `.rodata`. `ramfs_table` holds 32-byte entries (`name_ptr`, `data_ptr`, `size`, `flags`, terminated by an all-zero sentinel) housing regular text files (`motd.txt`, `about.txt`) and position-independent flat `EL0t` executables (`hello.bin`, `reader.bin`, `fault.bin`, `blktest.bin`).
+TalosFS is a read-only filesystem embedded in kernel `.rodata`. Its `ramfs_table` in `src/ramfs.S` holds 32-byte entries (`name_ptr`, `data_ptr`, `size`, `flags`) followed by an all-zero sentinel. It contains two text files (`motd.txt`, `about.txt`), four flat executables (`hello.bin`, `reader.bin`, `fault.bin`, `blktest.bin`), and two ELF64 executables (`echo.elf`, `sysinfo.elf`).
 
-Talos runs isolated `EL0t` payloads inside the 2 MiB user arena (`0x4020_0000`–`0x403F_FFFF`). `user_exec_blob` validates a payload size up to 1 MiB (`0x10_0000`), copies it to `0x4020_0000`, cleans the data cache (`dc cvau`), and invalidates the instruction cache (`ic ivau`) with `dsb ish; isb`. `user_exec` saves the kernel frame on `SP_EL1`, resets the 4-slot per-process file descriptor table, sets `SP_EL0 = 0x403F_F000`, `ELR_EL1 = 0x4020_0000`, and `SPSR_EL1 = 0` (`EL0t`, IRQs unmasked), clears `x0`–`x30`, and executes `eret`. Lower-EL timer IRQs route through vector slot 9 and return to `EL0t` transparently.
+The shell passes executable files to `user_exec_image`, which recognizes ELF images by their four-byte magic. For little-endian AArch64 `ET_EXEC` images, `elf64_load` in `src/elf.S` checks the ELF header, aligned entry address, and program header table. Before writing user RAM, it validates every `PT_LOAD` segment against the file size and the load range `[0x4020_0000, 0x403F_0000)`. It copies each segment to its virtual address, zeroes the trailing `p_memsz - p_filesz` bytes, and synchronizes the data and instruction caches with `dc cvau`, `ic ivau`, and barriers. The top 64 KiB of the user arena is reserved for the stack. For flat files, `user_exec_blob` accepts up to 1 MiB, copies the payload to `0x4020_0000`, and synchronizes the caches.
+
+`user_exec` saves the kernel frame on `SP_EL1`, resets the four file descriptor slots, and sets `SP_EL0 = 0x403F_F000`. It sets `ELR_EL1` to the ELF entry address or flat load address, sets `SPSR_EL1 = 0`, clears `x0`–`x30`, and enters `EL0t` with `eret`. Lower-EL timer IRQs route through vector slot 9 and return to `EL0t`.
+
+The build assembles `user/echo.S` and `user/sysinfo.S` and links each with `user/user.ld` at `0x4020_0000`. Run `exec echo.elf` to echo one byte at a time until Enter or the 62-byte limit. Run `exec sysinfo.elf` to check a 32-byte `.bss` guard and exercise the CPU ID and tick syscalls.
 
 User code invokes the kernel via `SVC #0` with the syscall number in `x8` and the return value in `x0`. Any non-`SVC` synchronous exception from `EL0` (such as a permission fault when accessing kernel memory) logs `ESR_EL1`, `ELR_EL1`, and `FAR_EL1` and unwinds cleanly back to the kernel caller via `user_exit_to_kernel`.
 
@@ -95,6 +99,7 @@ User code invokes the kernel via `SVC #0` with the syscall number in `x8` and th
 | `8` | `SYS_SLEEP` | `x0 = ticks`. Sleeps until the tick deadline, or yields when `ticks = 0`. Returns `0` in `x0`. |
 | `9` | `SYS_BLK_READ` | Reads sector `x0` into the 512-byte user buffer at `x1`. Returns `0` on success or `-1` on error. |
 | `10` | `SYS_BLK_WRITE` | Writes the 512-byte user buffer at `x1` to sector `x0`. Returns `0` on success or `-1` on error. |
+| `11` | `SYS_GETC` | Blocks on PL011 stdin and returns one byte (`0`–`255`) in `x0`. The kernel enables local IRQs while polling so timer ticks and scheduler preemption continue. |
 | Other | Unknown | Returns `-1` (`0xFFFFFFFFFFFFFFFF`) in `x0`. |
 
 Both block syscalls accept buffer starts from `0x4020_0000` through `0x403F_FE00` inclusive, so the entire sector fits in the user arena.
@@ -115,7 +120,7 @@ Run `make run` and enter commands at the `talos> ` prompt. The PL011 line editor
 | `yield` | Hands the CPU to the next ready task and prints a confirmation when the shell resumes. |
 | `ls` | Lists all files in `TalosFS` with their type (`FILE` or `EXEC`), byte size, and name. |
 | `cat <file>` | Looks up `<file>` in `TalosFS` and prints its contents to UART0. |
-| `exec <file>` | Loads an executable (`flags = 1`) from `TalosFS` into the `EL0t` user arena via `user_exec_blob`, runs it, and prints its exit status. |
+| `exec <file>` | Loads an executable (`flags = 1`) from `TalosFS` into the `EL0t` user arena via `user_exec_image`, runs it, and prints its exit status. |
 | `user [fault]` | Launches `hello.bin` (or `fault.bin` with `fault`) from `TalosFS` in `EL0t` to exercise syscalls and hardware fault isolation. |
 | `blkinfo` | Shows the MMIO base, transport version, capacity in sectors and KiB, and read/write or read-only mode. |
 | `blkread <sec>` | Reads a decimal or `0x`-prefixed hexadecimal sector number and displays its first 64 bytes as eight little-endian 64-bit words. |
@@ -138,3 +143,4 @@ Run `make run` and enter commands at the `talos> ` prompt. The PL011 line editor
 - [x] **v0.9.0** — Four-core Cortex-A72 bring-up via PSCI `CPU_ON`, per-core GICv2 and Generic Timer IRQs, exclusive-monitor UART spinlocks, and the `cpuinfo` shell command.
 - [x] **v0.10.0** — Symmetric four-core scheduling across eight slots, locked stack handoff, GICv2 SGI 0 reschedule IPIs, tick-driven sleep, `SYS_CPU_ID` and `SYS_SLEEP`, and per-CPU migration counters.
 - [x] **v0.11.0** — Persistent VirtIO-Blk storage over modern and legacy MMIO, split virtqueues, bounds-checked EL0 block I/O, and shell commands for sector inspection and writes.
+- [x] **v0.12.0** — ELF64 `ET_EXEC` loading with bounds-checked `PT_LOAD` segments and zeroed `.bss`, blocking `SYS_GETC` stdin, and standalone assembly programs `echo.elf` and `sysinfo.elf`.
