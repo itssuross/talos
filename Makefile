@@ -10,7 +10,7 @@ BIN := $(BUILD)/talos.bin
 DISK := $(BUILD)/disk.img
 SRCS := src/boot.S src/uart.S src/main.S src/vectors.S src/exceptions.S src/gic.S src/timer.S src/string.S src/shell.S src/mmu.S src/sched.S src/syscall.S src/elf.S src/ramfs.S src/spinlock.S src/smp.S src/virtio_blk.S
 OBJECTS := $(patsubst src/%.S,$(BUILD)/%.o,$(SRCS))
-USER_ELFS := $(BUILD)/user/echo.elf $(BUILD)/user/sysinfo.elf
+USER_ELFS := $(BUILD)/user/echo.elf $(BUILD)/user/sysinfo.elf $(BUILD)/user/selftest.elf
 QEMU ?= qemu-system-aarch64
 QEMU_FLAGS ?= -M virt -cpu cortex-a72 -smp 4 -m 128M -nographic -serial mon:stdio -drive file=$(DISK),format=raw,if=none,id=hd0 -device virtio-blk-device,drive=hd0
 
@@ -68,13 +68,18 @@ test: all $(DISK)
 		( tries=0; until grep -q '^talos> ' $(BUILD)/test.log; do \
 			tries=$$((tries + 1)); test $$tries -lt 100 || exit 1; sleep 0.05; \
 		  done; sleep 0.15; printf 'ticks\nuptime\nuser\nuser fault\n'; \
-		  printf 'help\ninfo\ncpuinfo\nmmu\nblkinfo\nblkwrite 0 TalosDiskOK\nblkread 0\nls\ncat motd.txt\nexec sysinfo.elf\nexec echo.elf\nhello-stdin\nexec reader.bin\nexec hello.bin\nexec blktest.bin\nexec fault.bin\nyield\ntasks\npeek 0x40080000\nhalt\n' ) | \
-		perl -e 'alarm 5; exec @ARGV' $(QEMU) $(QEMU_FLAGS) -kernel $(ELF) >$(BUILD)/test.log 2>&1 || status=$$?; \
+		  printf 'help\nversion\ninfo\ncpuinfo\nmmu\nblkinfo\nblkwrite 0 TalosDiskOK\nblkread 0\nls\ncat motd.txt\nexec sysinfo.elf\nexec echo.elf\nhello-stdin\nexec selftest.elf\nexec reader.bin\nexec hello.bin\nexec blktest.bin\nexec fault.bin\nyield\ntasks\npeek 0x40080000\nreboot\n'; \
+		  tries=0; until test "$$(grep -Fc "Type 'help' for available commands." $(BUILD)/test.log)" -ge 2 && tail -n 1 $(BUILD)/test.log | grep -q '^talos> '; do \
+			tries=$$((tries + 1)); test $$tries -lt 150 || exit 1; sleep 0.05; \
+		  done; sleep 0.05; printf 'blkread 0\nhalt\n' ) | \
+		perl -e 'alarm 15; exec @ARGV' $(QEMU) $(QEMU_FLAGS) -kernel $(ELF) >$(BUILD)/test.log 2>&1 || status=$$?; \
 		cat $(BUILD)/test.log; \
 		test "$$status" -eq 0 && \
-		grep -Fq "Talos v0.12.0" $(BUILD)/test.log && \
+		grep -Fq "Talos v1.0.0 (aarch64-virt)" $(BUILD)/test.log && \
+		grep -Fq "Talos v1.0.0 (aarch64-virt) - Pure AArch64 Assembly Microkernel" $(BUILD)/test.log && \
+		grep -Fq "ABI: v1.0 (12 syscalls, EL1 MMU 4KiB/39-bit, GICv2, 4-core SMP, VirtIO-Blk, ELF64)" $(BUILD)/test.log && \
 		grep -q "^talos> help" $(BUILD)/test.log && \
-		grep -q "^Commands: .*cpuinfo.*ls.*cat <file>.*exec <file>.*user \[fault\]" $(BUILD)/test.log && \
+		grep -q "^Commands: .*version.*cpuinfo.*ls.*cat <file>.*exec <file>.*user \[fault\]" $(BUILD)/test.log && \
 		grep -q "^CurrentEL: 1" $(BUILD)/test.log && \
 		grep -q "^Online CPUs: 4 / 4" $(BUILD)/test.log && \
 		grep -Fq "CPU  MPIDR               STATE    IRQ_TICKS  SGI_IPI" $(BUILD)/test.log && \
@@ -96,9 +101,10 @@ test: all $(DISK)
 		grep -q '^sysinfo\.elf: ELF64 PT_LOAD + \.bss zeroing verified!' $(BUILD)/test.log && \
 		grep -q '^echo\.elf: line echoed, exiting!' $(BUILD)/test.log && \
 		grep -q '^hello-stdin[[:space:]]*$$' $(BUILD)/test.log && \
-		awk '/^talos> exec (sysinfo|echo)\.elf[[:space:]]*$$/ { pending = 1; next } \
+		grep -Fq "selftest.elf: 14/14 adversarial ABI checks passed!" $(BUILD)/test.log && \
+		awk '/^talos> exec (sysinfo|echo|selftest)\.elf[[:space:]]*$$/ { pending = 1; next } \
 			/^talos> / { pending = 0 } pending && /^Exited with code: 0[[:space:]]*$$/ { ok++; pending = 0 } \
-			END { exit (ok != 2) }' $(BUILD)/test.log && \
+			END { exit (ok != 3) }' $(BUILD)/test.log && \
 		grep -q "hello.bin: running in EL0t via exec!" $(BUILD)/test.log && \
 		grep -Fq "Exited with code: 0" $(BUILD)/test.log && \
 		grep -Fq "Exited with code: -1" $(BUILD)/test.log && \
@@ -122,10 +128,16 @@ test: all $(DISK)
 		grep -Eq "^0x0000000040080000: 0x[[:xdigit:]]{16}" $(BUILD)/test.log && \
 		grep -q "^VirtIO-Blk MMIO" $(BUILD)/test.log && \
 		grep -Fq "128 sectors (64 KiB)  Mode: RW" $(BUILD)/test.log && \
+		grep -Fq "TalosDiskOK" $(BUILD)/test.log && \
 		grep -Fq "Wrote sector 0." $(BUILD)/test.log && \
 		grep -q "^0x00: 0x736944736F6C6154" $(BUILD)/test.log && \
 		grep -q "^0x08: 0x00000000004B4F6B" $(BUILD)/test.log && \
 		grep -Fq "blktest.bin: VirtIO-Blk EL0 read/write verified!" $(BUILD)/test.log && \
+		grep -Fq "Rebooting via PSCI SYSTEM_RESET..." $(BUILD)/test.log && \
+		awk '/^Rebooting via PSCI SYSTEM_RESET/ { rebooted = 1; next } \
+			rebooted && /^0x00: 0x736944736F6C6154/ { w0 = 1 } \
+			rebooted && /^0x08: 0x00000000004B4F6B/ { w1 = 1 } \
+			END { exit !(rebooted && w0 && w1) }' $(BUILD)/test.log && \
 		grep -q "Halting via PSCI SYSTEM_OFF" $(BUILD)/test.log
 
 clean:
