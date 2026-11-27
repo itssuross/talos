@@ -12,6 +12,7 @@
 .equ READY, 1
 .equ RUNNING, 2
 .equ SLEEPING, 3
+.equ MAX_SLEEP_TICKS, 0x7fffffffffffffff
 
 .section .bss, "aw", @nobits
 .balign 4
@@ -258,7 +259,9 @@ sched_yield:
 sched_sleep:
     cbz x0, sched_yield
     sched_enter
-    mov x22, x0
+    mov x22, #MAX_SLEEP_TICKS
+    cmp x0, x22
+    csel x22, x0, x22, ls
     bl timer_get_ticks
     add x22, x22, x0
     lock_current
@@ -270,8 +273,9 @@ sched_sleep:
     tbnz w0, #31, .Lsched_return
 .Lfallback_wait:
     bl timer_get_ticks
-    cmp x0, x22
-    b.hs .Lsched_return
+    sub x0, x0, x22
+    cmp x0, #0
+    b.ge .Lsched_return
     wfi
     msr daifclr, #2
     isb
@@ -295,19 +299,20 @@ sched_on_tick:
     cbnz x19, .Lcharge_tick
     bl timer_get_ticks
     adr x1, tcb_table
-    mov x2, #MAX_TASKS
+    mov x5, #MAX_TASKS
 .Lwake_sleepers:
     ldr x3, [x1, #TCB_STATE]
     cmp x3, #SLEEPING
     b.ne .Lnext_sleeper
-    ldr x3, [x1, #TCB_WAKE_TICK]
-    cmp x3, x0
-    b.hi .Lnext_sleeper
+    ldr x2, [x1, #TCB_WAKE_TICK]
+    sub x3, x0, x2
+    cmp x3, #0
+    b.lt .Lnext_sleeper
     mov x4, #READY
     str x4, [x1, #TCB_STATE]
 .Lnext_sleeper:
     add x1, x1, #(1 << TCB_SHIFT)
-    subs x2, x2, #1
+    subs x5, x5, #1
     b.ne .Lwake_sleepers
 .Lcharge_tick:
     ldr x0, [x20, #TCB_TICKS]
