@@ -53,6 +53,9 @@ irq_dispatch:
     bl gic_eoi_irq
     cmp w20, #30
     b.ne .Lirq_done
+    mrs x0, mpidr_el1
+    and x0, x0, #0xff
+    cbnz x0, .Lirq_done
     bl sched_on_tick
 .Lirq_done:
     ldp x19, x20, [sp, #16]
