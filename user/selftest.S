@@ -17,6 +17,20 @@
 _start:
     sub sp, sp, #512
 
+    mov x20, #17
+    mov x0, sp
+    add x1, sp, #512
+.Lcheck_stack_zero:
+    ldp x2, x3, [x0], #16
+    orr x2, x2, x3
+    cbnz x2, .Lfail
+    cmp x0, x1
+    b.lo .Lcheck_stack_zero
+    movz x0, #0x4030, lsl #16
+    ldp x2, x3, [x0]
+    orr x2, x2, x3
+    cbnz x2, .Lfail
+
     mov x20, #1
     mov x8, #99
     svc #0
@@ -146,12 +160,52 @@ _start:
     b.ne .Lfail
 
     mov x20, #15
+    movz x0, #0x4040, lsl #16
+    mov x1, #0
+    mov x8, #SYS_WRITE
+    svc #0
+    cmn x0, #1
+    b.ne .Lfail
+
+    mov x20, #16
+    adr x0, .Lmotd
+    mov x8, #SYS_OPEN
+    svc #0
+    cmn x0, #1
+    b.eq .Lfail
+    mov x19, x0
+    movz x1, #0x4040, lsl #16
+    mov x2, #0
+    mov x8, #SYS_READ
+    svc #0
+    cmn x0, #1
+    b.ne .Lfail
+    mov x0, x19
+    mov x8, #SYS_CLOSE
+    svc #0
+    cbnz x0, .Lfail
+
+    mov x20, #18
     mov x8, #SYS_CPU_ID
     svc #0
     cmp x0, #4
     b.hs .Lfail
-
-    mov x20, #16
+    mov x0, #0
+    mov x8, #SYS_SLEEP
+    svc #0
+    cbnz x0, .Lfail
+    mov x8, #SYS_GETTICKS
+    svc #0
+    mov x19, x0
+    mov x0, #1
+    mov x8, #SYS_SLEEP
+    svc #0
+    cbnz x0, .Lfail
+    mov x8, #SYS_GETTICKS
+    svc #0
+    sub x0, x0, x19
+    cmp x0, #1
+    b.lo .Lfail
     mov x8, #SYS_GETTICKS
     svc #0
     mov x19, x0
@@ -191,7 +245,7 @@ _start:
 .Lmissing:
     .asciz "missing.txt"
 .Lpass_msg:
-    .ascii "selftest.elf: 14/14 adversarial ABI checks passed!\n"
+    .ascii "selftest.elf: 18/18 adversarial ABI checks passed!\n"
 .Lpass_end:
 .Lfail_msg:
     .ascii "selftest.elf: FAILED check\n"
