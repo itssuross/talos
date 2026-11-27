@@ -78,3 +78,54 @@ parse_hex64:
     mov x1, #0
     ret
 .size parse_hex64, . - parse_hex64
+
+.global parse_u64
+.type parse_u64, %function
+
+// ABI: String in x0, value in x0 and success flag in x1. Clobbers x0–x7 and NZCV.
+parse_u64:
+    ldrb w1, [x0]
+    cmp w1, #'0'
+    b.ne .Ldec_start
+    ldrb w1, [x0, #1]
+    orr w1, w1, #0x20
+    cmp w1, #'x'
+    b.eq parse_hex64
+.Ldec_start:
+    mov x2, x0
+    mov x0, #0
+    mov w3, #0
+    mov x4, #10
+    mov x5, #-1
+    udiv x5, x5, x4
+.Ldec_next:
+    ldrb w6, [x2], #1
+    sub w7, w6, #'0'
+    cmp w7, #9
+    b.hi .Ldec_end
+    cmp w3, #20
+    b.hs .Ldec_invalid
+    cmp x0, x5
+    b.hi .Ldec_invalid
+    b.ne .Ldec_append
+    cmp w7, #5
+    b.hi .Ldec_invalid
+.Ldec_append:
+    madd x0, x0, x4, x7
+    add w3, w3, #1
+    b .Ldec_next
+.Ldec_end:
+    cbz w6, .Ldec_done
+    cmp w6, #' '
+    b.eq .Ldec_done
+    cmp w6, #9
+    b.ne .Ldec_invalid
+.Ldec_done:
+    cmp w3, #0
+    cset x1, ne
+    ret
+.Ldec_invalid:
+    mov x0, #0
+    mov x1, #0
+    ret
+.size parse_u64, . - parse_u64
