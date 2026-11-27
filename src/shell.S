@@ -113,6 +113,7 @@ shell_run:
 .Ldispatch:
     mov x20, x0
     match_command help
+    match_command version
     match_command info
     match_command cpuinfo
     match_command mmu
@@ -140,6 +141,10 @@ shell_run:
 
 .Lcmd_help:
     puts_label .Lhelp_text
+    b .Lprompt
+
+.Lcmd_version:
+    puts_label .Lversion_text
     b .Lprompt
 
 .Lcmd_info:
@@ -615,6 +620,7 @@ shell_run:
 .Lunknown:        .asciz "Unknown command: "
 .Lhint:           .asciz " (type 'help')\n"
 .Lname_help:      .asciz "help"
+.Lname_version:   .asciz "version"
 .Lname_info:      .asciz "info"
 .Lname_cpuinfo:   .asciz "cpuinfo"
 .Lname_mmu:       .asciz "mmu"
@@ -634,8 +640,9 @@ shell_run:
 .Lname_brk:       .asciz "brk"
 .Lname_reboot:    .asciz "reboot"
 .Lname_halt:      .asciz "halt"
-.Lhelp_text:      .asciz "Commands: help, info, cpuinfo, mmu, ticks, uptime, tasks, yield, ls, cat <file>, exec <file>, user [fault], blkinfo, blkread <sec>, blkwrite <sec> <text>, peek <hex_addr>, brk, reboot, halt\n"
-.Linfo_el:        .asciz "Talos v0.12.0 (aarch64-virt)\nCurrentEL: "
+.Lhelp_text:      .asciz "Commands: help, version, info, cpuinfo, mmu, ticks, uptime, tasks, yield, ls, cat <file>, exec <file>, user [fault], blkinfo, blkread <sec>, blkwrite <sec> <text>, peek <hex_addr>, brk, reboot, halt\n"
+.Lversion_text:   .asciz "Talos v1.0.0 (aarch64-virt) - Pure AArch64 Assembly Microkernel\nABI: v1.0 (12 syscalls, EL1 MMU 4KiB/39-bit, GICv2, 4-core SMP, VirtIO-Blk, ELF64)\n"
+.Linfo_el:        .asciz "Talos v1.0.0 (aarch64-virt)\nCurrentEL: "
 .Lmpidr:          .asciz "\nMPIDR_EL1: "
 .Lvbar:           .asciz "\nVBAR_EL1 : "
 .Lcntfrq:         .asciz "\nCNTFRQ   : "
