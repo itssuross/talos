@@ -75,8 +75,8 @@ test: all $(DISK)
 		perl -e 'alarm 15; exec @ARGV' $(QEMU) $(QEMU_FLAGS) -kernel $(ELF) >$(BUILD)/test.log 2>&1 || status=$$?; \
 		cat $(BUILD)/test.log; \
 		test "$$status" -eq 0 && \
-		grep -Fq "Talos v1.0.0 (aarch64-virt)" $(BUILD)/test.log && \
-		grep -Fq "Talos v1.0.0 (aarch64-virt) - Pure AArch64 Assembly Microkernel" $(BUILD)/test.log && \
+		grep -Fq "Talos v1.0.1 (aarch64-virt)" $(BUILD)/test.log && \
+		grep -Fq "Talos v1.0.1 (aarch64-virt) - Pure AArch64 Assembly Microkernel" $(BUILD)/test.log && \
 		grep -Fq "ABI: v1.0 (12 syscalls, EL1 MMU 4KiB/39-bit, GICv2, 4-core SMP, VirtIO-Blk, ELF64)" $(BUILD)/test.log && \
 		grep -q "^talos> help" $(BUILD)/test.log && \
 		grep -q "^Commands: .*version.*cpuinfo.*ls.*cat <file>.*exec <file>.*user \[fault\]" $(BUILD)/test.log && \
@@ -101,7 +101,7 @@ test: all $(DISK)
 		grep -q '^sysinfo\.elf: ELF64 PT_LOAD + \.bss zeroing verified!' $(BUILD)/test.log && \
 		grep -q '^echo\.elf: line echoed, exiting!' $(BUILD)/test.log && \
 		grep -q '^hello-stdin[[:space:]]*$$' $(BUILD)/test.log && \
-		grep -Fq "selftest.elf: 14/14 adversarial ABI checks passed!" $(BUILD)/test.log && \
+		grep -Fq "selftest.elf: 18/18 adversarial ABI checks passed!" $(BUILD)/test.log && \
 		awk '/^talos> exec (sysinfo|echo|selftest)\.elf[[:space:]]*$$/ { pending = 1; next } \
 			/^talos> / { pending = 0 } pending && /^Exited with code: 0[[:space:]]*$$/ { ok++; pending = 0 } \
 			END { exit (ok != 3) }' $(BUILD)/test.log && \
