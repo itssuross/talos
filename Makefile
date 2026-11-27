@@ -7,7 +7,8 @@ LLVM_OBJCOPY := $(or $(wildcard $(LLVM_PREFIX)/bin/llvm-objcopy),$(shell command
 BUILD := build
 ELF := $(BUILD)/talos.elf
 BIN := $(BUILD)/talos.bin
-OBJECTS := $(addprefix $(BUILD)/,boot.o uart.o main.o vectors.o exceptions.o gic.o timer.o)
+SRCS := src/boot.S src/uart.S src/main.S src/vectors.S src/exceptions.S src/gic.S src/timer.S src/string.S src/shell.S
+OBJECTS := $(patsubst src/%.S,$(BUILD)/%.o,$(SRCS))
 QEMU ?= qemu-system-aarch64
 QEMU_FLAGS ?= -M virt -cpu cortex-a72 -m 128M -nographic
 
@@ -45,10 +46,20 @@ run: all
 
 test: all
 	@status=0; \
-		perl -e 'alarm 5; exec @ARGV' $(QEMU) $(QEMU_FLAGS) -serial stdio -monitor none -kernel $(ELF) </dev/null >$(BUILD)/test.log 2>&1 || status=$$?; \
+		: >$(BUILD)/test.log; \
+		( tries=0; until grep -q '^talos> ' $(BUILD)/test.log; do \
+			tries=$$((tries + 1)); test $$tries -lt 100 || exit 1; sleep 0.05; \
+		  done; printf 'help\ninfo\nticks\nuptime\npeek 0x40080000\nhalt\n' ) | \
+		perl -e 'alarm 5; exec @ARGV' $(QEMU) $(QEMU_FLAGS) -serial stdio -monitor none -kernel $(ELF) >$(BUILD)/test.log 2>&1 || status=$$?; \
 		cat $(BUILD)/test.log; \
 		test "$$status" -eq 0 && \
-		grep -q "Talos v" $(BUILD)/test.log && \
+		grep -Fq "Talos v0.4.0" $(BUILD)/test.log && \
+		grep -q "^talos> help" $(BUILD)/test.log && \
+		grep -q "^Commands: " $(BUILD)/test.log && \
+		grep -q "^CurrentEL: 1" $(BUILD)/test.log && \
+		grep -q "^Ticks: [0-9]" $(BUILD)/test.log && \
+		grep -q "^Uptime: [0-9]" $(BUILD)/test.log && \
+		grep -q "^0x0000000040080000: " $(BUILD)/test.log && \
 		grep -q "Halting via PSCI SYSTEM_OFF" $(BUILD)/test.log
 
 clean:
