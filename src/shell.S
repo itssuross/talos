@@ -174,6 +174,9 @@ shell_run:
 .Lcpu_ticks:
     mov x0, x19
     bl timer_get_core_ticks
+    bl .Lput_task_number
+    mov x0, x19
+    bl smp_get_sgi_count
     bl uart_putdec
     mov w0, #10
     bl uart_putc
@@ -349,38 +352,62 @@ shell_run:
     mov x0, x19
     bl sched_get_tcb
     mov x20, x0
-    ldr x1, [x20, #8]
-    cbz x1, .Lnext_task
-    cmp x1, #2
-    adr x1, .Ltask_running
-    adr x2, .Ltask_ready
-    csel x21, x1, x2, eq
+    mrs x27, daif
+    msr daifset, #2
+    isb
+    adr x0, sched_lock
+    bl spin_lock
+    ldr x21, [x20, #8]
     ldp x22, x23, [x20, #24]
-    ldr x0, [x20, #16]
+    ldr x24, [x20, #40]
+    ldp w25, w26, [x20, #48]
+    adr x0, sched_lock
+    bl spin_unlock
+    msr daif, x27
+    isb
+    cbz x21, .Lnext_task
+    mov x0, x19
     bl uart_putdec
-    mov x0, x21
+    cmp x21, #2
+    adr x0, .Ltask_running
+    adr x1, .Ltask_ready
+    csel x0, x0, x1, eq
+    cmp x21, #3
+    adr x1, .Ltask_sleeping
+    csel x0, x1, x0, eq
     bl uart_puts
+    mov w0, w26
+    bl uart_putdec
+    puts_label .Lcpu_gap
+    tbnz w25, #31, .Lany_affinity
+    mov w0, w25
+    bl uart_putdec
+    puts_label .Lpinned_gap
+    b .Ltask_counts
+.Lany_affinity:
+    puts_label .Ltask_any
+.Ltask_counts:
     mov x0, x22
     bl .Lput_task_number
     mov x0, x23
     bl .Lput_task_number
-    ldr x0, [x20, #40]
+    mov x0, x24
     bl uart_puts
     mov w0, #10
     bl uart_putc
 .Lnext_task:
     add x19, x19, #1
-    cmp x19, #4
+    cmp x19, #8
     b.lo .Ltask_row
-    puts_label .Lworker_a_iterations
-    adrp x0, worker_a_count
-    ldr x0, [x0, :lo12:worker_a_count]
-    bl uart_putdec
-    puts_label .Lworker_b_iterations
-    adrp x0, worker_b_count
-    ldr x0, [x0, :lo12:worker_b_count]
-    bl uart_putdec
-    b .Lnewline
+
+    puts_label .Lhits_header
+    puts_label .Lworker_a
+    adr x0, worker_a_cpu_hits
+    bl .Lput_cpu_hits
+    puts_label .Lworker_b
+    adr x0, worker_b_cpu_hits
+    bl .Lput_cpu_hits
+    b .Lprompt
 
 .Lcmd_peek:
     mov x0, x20
@@ -413,6 +440,22 @@ shell_run:
     puts_label .Lhalt_text
     b psci_system_off
 .size shell_run, . - shell_run
+
+// ABI: Four per-CPU counters at x0. Clobbers caller-saved registers and NZCV.
+.Lput_cpu_hits:
+    stp x19, x30, [sp, #-32]!
+    str x20, [sp, #16]
+    mov x19, x0
+    add x20, x19, #32
+.Lhit_count:
+    ldr x0, [x19], #8
+    bl .Lput_task_number
+    cmp x19, x20
+    b.lo .Lhit_count
+    ldr x20, [sp, #16]
+    ldp x19, x30, [sp], #32
+    mov w0, #10
+    b uart_putc
 
 // ABI: Decimal value in x0. Clobbers x0–x4 and NZCV.
 .Lput_task_number:
@@ -460,13 +503,13 @@ shell_run:
 .Lname_reboot:    .asciz "reboot"
 .Lname_halt:      .asciz "halt"
 .Lhelp_text:      .asciz "Commands: help, info, cpuinfo, mmu, ticks, uptime, tasks, yield, ls, cat <file>, exec <file>, user [fault], peek <hex_addr>, brk, reboot, halt\n"
-.Linfo_el:        .asciz "Talos v0.9.0 (aarch64-virt)\nCurrentEL: "
+.Linfo_el:        .asciz "Talos v0.10.0 (aarch64-virt)\nCurrentEL: "
 .Lmpidr:          .asciz "\nMPIDR_EL1: "
 .Lvbar:           .asciz "\nVBAR_EL1 : "
 .Lcntfrq:         .asciz "\nCNTFRQ   : "
 .Lhz_daif:        .asciz " Hz\nDAIF     : "
 .Lonline_count:   .asciz "Online CPUs: "
-.Lcpu_header:     .asciz " / 4\nCPU  MPIDR               STATE    IRQ_TICKS\n"
+.Lcpu_header:     .asciz " / 4\nCPU  MPIDR               STATE    IRQ_TICKS  SGI_IPI\n"
 .Lcpu_gap:        .asciz "    "
 .Lcpu_online_text:  .asciz "  ONLINE   "
 .Lcpu_offline_text: .asciz "  OFFLINE  "
@@ -481,9 +524,12 @@ shell_run:
 .Lseconds_suffix: .asciz "s ("
 .Lticks_suffix:   .asciz " ticks)\n"
 .Lseparator:      .asciz ": "
-.Ltasks_header:   .asciz "ID  STATE    SWITCHES  TICKS     NAME\n"
-.Ltask_ready:     .asciz "   READY    "
-.Ltask_running:   .asciz "   RUNNING  "
+.Ltasks_header:   .asciz "ID  STATE     CPU  AFF   SWITCHES  TICKS     NAME\n"
+.Ltask_ready:     .asciz "   READY     "
+.Ltask_running:   .asciz "   RUNNING   "
+.Ltask_sleeping:  .asciz "   SLEEPING  "
+.Lpinned_gap:     .asciz "     "
+.Ltask_any:       .asciz "ANY   "
 .Lyield_text:     .asciz "Yielded CPU to scheduler.\n"
 .Lls_header:      .asciz "TYPE  SIZE      NAME\n"
 .Ltype_file:      .asciz "FILE  "
@@ -498,8 +544,9 @@ shell_run:
 .Luser_fault_start: .asciz "Launching EL0t fault probe (reading kernel 0x40080000)...\n"
 .Luser_fault_done:  .asciz "EL0t fault isolated; returned to shell.\n"
 .Luser_usage_text:  .asciz "Usage: user [fault]\n"
-.Lworker_a_iterations: .asciz "worker-a iterations: "
-.Lworker_b_iterations: .asciz "\nworker-b iterations: "
+.Lhits_header:    .asciz "WORKER    CPU0      CPU1      CPU2      CPU3\n"
+.Lworker_a:       .asciz "worker-a  "
+.Lworker_b:       .asciz "worker-b  "
 .Lusage:          .asciz "Usage: peek <8-byte-aligned-hex-addr>\n"
 .Lbrk_text:       .asciz "Triggering BRK #0x42...\n"
 .Lreboot_text:    .asciz "Rebooting via PSCI SYSTEM_RESET...\n"
