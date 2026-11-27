@@ -74,6 +74,23 @@ psci_system_off:
     b .Loff_wait
 .size psci_system_off, . - psci_system_off
 
+.global psci_system_reset
+.type psci_system_reset, %function
+
+// ABI: Takes no arguments and never returns.
+psci_system_reset:
+    movz x0, #0x0009
+    movk x0, #0x8400, lsl #16
+    mov x1, xzr
+    mov x2, xzr
+    mov x3, xzr
+    hvc #0
+
+.Lreset_wait:
+    wfe
+    b .Lreset_wait
+.size psci_system_reset, . - psci_system_reset
+
 .global panic_exception
 .type panic_exception, %function
 
