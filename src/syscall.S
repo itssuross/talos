@@ -11,6 +11,8 @@
 .equ SYS_CLOSE,        6
 .equ SYS_CPU_ID,       7
 .equ SYS_SLEEP,        8
+.equ SYS_BLK_READ,     9
+.equ SYS_BLK_WRITE,    10
 .equ SYS_WRITE_MAX,    256
 .equ SYS_OPEN_MAX_LEN, 64
 .equ SYS_READ_MAX,     4096
@@ -150,6 +152,10 @@ syscall_dispatch:
     b.eq .Lsys_cpu_id
     cmp x8, #SYS_SLEEP
     b.eq .Lsys_sleep
+    cmp x8, #SYS_BLK_READ
+    b.eq .Lsys_blk
+    cmp x8, #SYS_BLK_WRITE
+    b.eq .Lsys_blk
 
 .Lsys_invalid:
     mov x0, #-1
@@ -204,6 +210,25 @@ syscall_dispatch:
     ldr x0, [x19]
     bl sched_sleep
     str xzr, [x19]
+    b .Lsys_done
+
+.Lsys_blk:
+    ldp x0, x1, [x19]
+    mov x2, #USER_BASE
+    cmp x1, x2
+    b.lo .Lsys_invalid
+    mov x2, #USER_END
+    sub x2, x2, #512
+    cmp x1, x2
+    b.hi .Lsys_invalid
+    cmp x8, #SYS_BLK_READ
+    b.ne .Lsys_blk_write
+    bl blk_read_sector
+    b .Lsys_blk_done
+.Lsys_blk_write:
+    bl blk_write_sector
+.Lsys_blk_done:
+    str x0, [x19]
     b .Lsys_done
 
 .Lsys_open:
