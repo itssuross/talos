@@ -5,7 +5,11 @@ LLD := $(or $(wildcard $(LLVM_PREFIX)/bin/ld.lld),$(wildcard $(LLD_PREFIX)/bin/l
 LLVM_OBJCOPY := $(or $(wildcard $(LLVM_PREFIX)/bin/llvm-objcopy),$(shell command -v llvm-objcopy))
 
 BUILD := build
+ELF := $(BUILD)/talos.elf
+BIN := $(BUILD)/talos.bin
 OBJECTS := $(addprefix $(BUILD)/,boot.o uart.o main.o)
+QEMU ?= qemu-system-aarch64
+QEMU_FLAGS ?= -M virt -cpu cortex-a72 -m 128M -nographic
 
 ifneq ($(and $(CLANG),$(LLD),$(LLVM_OBJCOPY)),)
 TARGET := --target=aarch64-unknown-none-elf
@@ -13,14 +17,16 @@ ASSEMBLE = "$(CLANG)" $(TARGET) -ffreestanding -Wall -Wextra -Werror -Wa,--fatal
 LINK = "$(CLANG)" $(TARGET) -nostdlib -ffreestanding -fuse-ld=lld --ld-path="$(LLD)" -Wl,--fatal-warnings,-T,linker.ld
 OBJCOPY = "$(LLVM_OBJCOPY)"
 else
-ASSEMBLE = aarch64-elf-as --fatal-warnings
-LINK = aarch64-elf-ld --fatal-warnings -T linker.ld
+AS = aarch64-elf-as
+LD = aarch64-elf-ld
 OBJCOPY = aarch64-elf-objcopy
+ASSEMBLE = $(AS) --fatal-warnings
+LINK = $(LD) --fatal-warnings -T linker.ld
 endif
 
-.PHONY: all run clean
+.PHONY: all run test clean
 
-all: $(BUILD)/talos.elf $(BUILD)/talos.bin
+all: $(ELF) $(BIN)
 
 $(BUILD):
 	mkdir -p $@
@@ -28,14 +34,22 @@ $(BUILD):
 $(BUILD)/%.o: src/%.S | $(BUILD)
 	$(ASSEMBLE) $< -o $@
 
-$(BUILD)/talos.elf: linker.ld $(OBJECTS)
+$(ELF): linker.ld $(OBJECTS)
 	$(LINK) $(OBJECTS) -o $@
 
-$(BUILD)/talos.bin: $(BUILD)/talos.elf
+$(BIN): $(ELF)
 	$(OBJCOPY) -O binary $< $@
 
 run: all
-	qemu-system-aarch64 -M virt -cpu cortex-a72 -m 128M -nographic -serial mon:stdio -kernel $(BUILD)/talos.elf
+	$(QEMU) $(QEMU_FLAGS) -serial mon:stdio -kernel $(ELF)
+
+test: all
+	@status=0; \
+		perl -e 'alarm 5; exec @ARGV' $(QEMU) $(QEMU_FLAGS) -serial stdio -monitor none -kernel $(ELF) </dev/null >$(BUILD)/test.log 2>&1 || status=$$?; \
+		cat $(BUILD)/test.log; \
+		test "$$status" -eq 0 && \
+		grep -q "Talos v" $(BUILD)/test.log && \
+		grep -q "Halting via PSCI SYSTEM_OFF" $(BUILD)/test.log
 
 clean:
 	rm -rf $(BUILD)
