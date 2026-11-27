@@ -79,6 +79,7 @@ ramfs_table:
     .quad .Lname_blktest, .Lfile_blktest_start, .Lfile_blktest_end - .Lfile_blktest_start, 1
     .quad .Lname_echo, .Lfile_echo_start, .Lfile_echo_end - .Lfile_echo_start, 1
     .quad .Lname_sysinfo, .Lfile_sysinfo_start, .Lfile_sysinfo_end - .Lfile_sysinfo_start, 1
+    .quad .Lname_selftest, .Lfile_selftest_start, .Lfile_selftest_end - .Lfile_selftest_start, 1
     .quad 0, 0, 0, 0
 
 .Lname_motd:
@@ -99,6 +100,8 @@ ramfs_table:
     .asciz "echo.elf"
 .Lname_sysinfo:
     .asciz "sysinfo.elf"
+.Lname_selftest:
+    .asciz "selftest.elf"
 
 .Lfile_motd_start:
     .ascii "Welcome to TalosFS (100% pure AArch64 RAMFS)!\n"
@@ -233,3 +236,8 @@ ramfs_table:
 .Lfile_sysinfo_start:
     .incbin "user/sysinfo.elf"
 .Lfile_sysinfo_end:
+
+.balign 8
+.Lfile_selftest_start:
+    .incbin "user/selftest.elf"
+.Lfile_selftest_end:
