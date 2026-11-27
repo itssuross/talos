@@ -1,3 +1,8 @@
+.section .bss, "aw", @nobits
+.balign 4
+uart_lock:
+    .word 0
+
 .section .text, "ax"
 
 .equ UART0_BASE, 0x09000000
@@ -35,6 +40,19 @@ uart_init:
 
 // ABI: Byte in w0. Clobbers x0–x3 and NZCV.
 uart_putc:
+    stp x19, x30, [sp, #-16]!
+    mov w19, w0
+    adr x0, uart_lock
+    bl spin_lock
+    mov w0, w19
+    bl .Luart_putc_raw
+    adr x0, uart_lock
+    ldp x19, x30, [sp], #16
+    b spin_unlock
+.size uart_putc, . - uart_putc
+
+// ABI: Byte in w0. Clobbers x0–x3 and NZCV.
+.Luart_putc_raw:
     mov x1, #UART0_BASE
     and w0, w0, #0xff
     cmp w0, #10
@@ -49,7 +67,6 @@ uart_putc:
     mov w2, w0
     b.ne .Ltx_wait
     ret
-.size uart_putc, . - uart_putc
 
 .global uart_getc
 .type uart_getc, %function
@@ -74,14 +91,18 @@ uart_puts:
     mov x29, sp
     str x19, [sp, #16]
     mov x19, x0
+    adr x0, uart_lock
+    bl spin_lock
 
 .Lputs_next:
     ldrb w0, [x19], #1
     cbz w0, .Lputs_done
-    bl uart_putc
+    bl .Luart_putc_raw
     b .Lputs_next
 
 .Lputs_done:
+    adr x0, uart_lock
+    bl spin_unlock
     ldr x19, [sp, #16]
     ldp x29, x30, [sp], #32
     ret
