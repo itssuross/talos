@@ -1,6 +1,6 @@
-# Talos v1.0.0 Kernel & Userspace ABI
+# Talos v1.0.1 Kernel & Userspace ABI
 
-This document defines the frozen **Talos v1.0.0** hardware interface, virtual memory map, `EL0t` syscall ABI, executable loader rules, and `TalosFS` binary layout.
+This document defines the frozen **Talos v1.0** hardware interface, virtual memory map, `EL0t` syscall ABI, executable loader rules, and `TalosFS` binary layout, including **v1.0.1** security and boundary clarifications.
 
 ## 1. Target Hardware & Physical Memory Map
 
@@ -33,6 +33,7 @@ Talos runs at `EL1h` with stage-1 identity mapping enabled (`TTBR0_EL1`, 4 KiB g
 
 - `0x4020_0000`–`0x403E_FFFF` (`1984 KiB`): Loadable image region (ELF64 `PT_LOAD` segments or flat `.bin` payloads up to 1 MiB).
 - `0x403F_0000`–`0x403F_FFFF` (`64 KiB`): User stack region; initial `SP_EL0 = 0x403FF000`.
+- Before loading every `exec` image (ELF64 or flat `.bin`), the kernel zeroes the entire 2 MiB arena (`0x4020_0000`–`0x403F_FFFF`, including code/BSS gaps and `SP_EL0` stack memory) and synchronizes data and instruction caches.
 - On entry via `eret`, `SPSR_EL1 = 0` (`EL0t`, DAIF unmasked), `x0`–`x30 = 0`, and all 4 per-process file descriptor slots (`0..3`) are reset to closed.
 
 ## 2. Frozen `SVC #0` Syscall ABI
@@ -48,14 +49,14 @@ User programs invoke kernel services using `svc #0`:
 | `x8` | Name | Signature | Behavior & Bounds |
 | --- | --- | --- | --- |
 | `0` | `SYS_EXIT` | `(code)` -> `!` | Never returns; terminates `EL0t` execution and returns `code` to the kernel caller. |
-| `1` | `SYS_WRITE` | `(buf, len)` -> `n \| -1` | Validates `len <= 256` and `[buf, buf + len)` within `[0x4020_0000, 0x4040_0000)` without wrap-around; writes bytes to UART0; returns `len` or `-1`. |
+| `1` | `SYS_WRITE` | `(buf, len)` -> `n \| -1` | Validates `buf` strictly within `[0x4020_0000, 0x403F_FFFF]` (even when `len == 0`, rejecting `0x4040_0000`), `len <= 256`, and `[buf, buf + len)` within `[0x4020_0000, 0x4040_0000)` without wrap-around; writes bytes to UART0; returns `len` or `-1`. |
 | `2` | `SYS_GETTICKS` | `()` -> `ticks` | Returns Core 0 monotonic `100 Hz` timer tick count. |
 | `3` | `SYS_YIELD` | `()` -> `0` | Cooperatively yields the CPU to the scheduler; returns `0`. |
 | `4` | `SYS_OPEN` | `(path_ptr)` -> `fd \| -1` | Validates a NUL-terminated path of at most 64 bytes inside `[0x4020_0000, 0x4040_0000)`, resolves it in `TalosFS`, allocates the lowest free FD slot `0..3`, and returns `fd` or `-1` (including `EMFILE` when all 4 slots are open). |
-| `5` | `SYS_READ` | `(fd, buf, count)` -> `n \| -1` | Validates open `fd` in `0..3`, `count <= 4096`, and `[buf, buf + count)` within `[0x4020_0000, 0x4040_0000)` without wrap-around; reads up to `min(count, remaining)` bytes, advances offset, and returns bytes read (`0` at EOF) or `-1`. |
+| `5` | `SYS_READ` | `(fd, buf, count)` -> `n \| -1` | Validates open `fd` in `0..3`, `buf` strictly within `[0x4020_0000, 0x403F_FFFF]` (even when `count == 0`, rejecting `0x4040_0000`), `count <= 4096`, and `[buf, buf + count)` within `[0x4020_0000, 0x4040_0000)` without wrap-around; reads up to `min(count, remaining)` bytes, advances offset, and returns bytes read (`0` at EOF) or `-1`. |
 | `6` | `SYS_CLOSE` | `(fd)` -> `0 \| -1` | Validates open `fd` in `0..3`, marks the slot free, and returns `0` or `-1`. |
 | `7` | `SYS_CPU_ID` | `()` -> `cpu` | Returns executing Cortex-A72 core ID (`MPIDR_EL1 & 0xFF`, `0..3`). |
-| `8` | `SYS_SLEEP` | `(ticks)` -> `0` | Sleeps calling task for `ticks` Core 0 timer ticks (`0` yields immediately); returns `0`. |
+| `8` | `SYS_SLEEP` | `(ticks)` -> `0` | Sleeps calling task for `ticks` Core 0 timer ticks (`0` yields immediately; durations above `INT64_MAX` / `0x7FFF_FFFF_FFFF_FFFF` are clamped to `INT64_MAX` to prevent signed 64-bit `wake_tick` wrap-around); returns `0`. |
 | `9` | `SYS_BLK_READ` | `(sector, buf)` -> `0 \| -1` | Validates `buf` in `[0x4020_0000, 0x403F_FE00]` and `sector < capacity`; reads a 512-byte VirtIO-Blk sector into `buf`; returns `0` or `-1`. |
 | `10` | `SYS_BLK_WRITE` | `(sector, buf)` -> `0 \| -1` | Validates `buf` in `[0x4020_0000, 0x403F_FE00]`, writable media, and `sector < capacity`; writes a 512-byte VirtIO-Blk sector from `buf`; returns `0` or `-1`. |
 | `11` | `SYS_GETC` | `()` -> `byte` | Blocks with local IRQs enabled until 1 byte arrives from PL011 UART0; returns `0..255`. |
@@ -64,7 +65,7 @@ Any `x8` outside `0..11` returns `-1` (`0xFFFF_FFFF_FFFF_FFFF`).
 
 ## 3. Executable Formats
 
-The kernel image dispatcher (`user_exec_image`) inspects the first 4 bytes of an executable (`flags = 1`):
+The kernel image dispatcher (`user_exec_image`) inspects the first 4 bytes of an executable (`flags = 1`) and zeroes the entire 2 MiB `EL0t` arena (`0x4020_0000`–`0x403F_FFFF`) before loading every image:
 
 ### ELF64 Loader (`src/elf.S`)
 
@@ -77,14 +78,16 @@ Triggered when image size `>= 4` and the first 4 bytes equal `\x7fELF`. The load
   - `e_type = ET_EXEC (2)`
   - `e_machine = EM_AARCH64 (183)`
   - `e_version = 1`, `e_ehsize = 64`
-  - `e_entry` is 4-byte aligned and within `[0x4020_0000, 0x403F_0000)`
+  - `e_entry` is 4-byte aligned, within `[0x4020_0000, 0x403F_0000)`, and contained within an executable (`PF_X`) `PT_LOAD` segment
   - `e_phentsize >= 56`, `1 <= e_phnum <= 16`, `e_phoff >= 64`, and the entire program header table fits within the file size
 - **Program headers (`PT_LOAD = 1`):**
-  - At least one `PT_LOAD` segment must be present
+  - At least one executable (`PF_X`) `PT_LOAD` segment containing `e_entry` must be present
   - `p_filesz <= p_memsz`
   - `[p_offset, p_offset + p_filesz)` lies within the file bounds
-  - `[p_vaddr, p_vaddr + p_memsz)` lies strictly within `[0x4020_0000, 0x403F_0000)` (preserving the top 64 KiB for `SP_EL0`)
+  - For every non-empty `PT_LOAD` segment (and any zero-sized `PT_LOAD` segment with non-zero `p_vaddr`), `[p_vaddr, p_vaddr + p_memsz)` lies strictly within `[0x4020_0000, 0x403F_0000)` (preserving the top 64 KiB for `SP_EL0`)
+  - Non-empty `PT_LOAD` segments must not overlap in virtual address space
 - **Loading & cache coherency:**
+  - The kernel zeroes `0x4020_0000`–`0x403F_FFFF` before invoking `elf64_load`
   - Copies `p_filesz` bytes from `file + p_offset` to `p_vaddr`
   - Zero-fills `[p_vaddr + p_filesz, p_vaddr + p_memsz)` (`.bss`)
   - Cleans data cache lines (`dc cvau`, `dsb ish`) and invalidates instruction cache lines (`ic ivau`, `dsb ish`, `isb`) using line sizes from `CTR_EL0`
@@ -94,6 +97,7 @@ Triggered when image size `>= 4` and the first 4 bytes equal `\x7fELF`. The load
 Any executable without the `\x7fELF` header (or shorter than 4 bytes) is treated as a raw AArch64 flat `.bin`:
 
 - Size must satisfy `1 <= size <= 0x0010_0000` (`1 MiB`)
+- The kernel zeroes `0x4020_0000`–`0x403F_FFFF` before copying the payload
 - Copied verbatim to `0x4020_0000`
 - Synchronized with `dc cvau`, `ic ivau`, `dsb ish`, and `isb`
 - Entered at `ELR_EL1 = 0x4020_0000` with `SP_EL0 = 0x403FF000`
