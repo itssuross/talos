@@ -32,6 +32,31 @@ irq_disable:
     ret
 .size irq_disable, . - irq_disable
 
+.global irq_dispatch
+.type irq_dispatch, %function
+
+// ABI: Clobbers x0–x1 and NZCV. Preserves callee-saved registers.
+irq_dispatch:
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    stp x19, x20, [sp, #16]
+    bl gic_ack_irq
+    mov w19, w0
+    and w20, w0, #0x3ff
+    cmp w20, #1020
+    b.hs .Lirq_done
+    cmp w20, #30
+    b.ne .Lirq_eoi
+    bl timer_irq_handler
+.Lirq_eoi:
+    mov w0, w19
+    bl gic_eoi_irq
+.Lirq_done:
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+.size irq_dispatch, . - irq_dispatch
+
 .global psci_system_off
 .type psci_system_off, %function
 
