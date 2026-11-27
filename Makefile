@@ -7,10 +7,11 @@ LLVM_OBJCOPY := $(or $(wildcard $(LLVM_PREFIX)/bin/llvm-objcopy),$(shell command
 BUILD := build
 ELF := $(BUILD)/talos.elf
 BIN := $(BUILD)/talos.bin
-SRCS := src/boot.S src/uart.S src/main.S src/vectors.S src/exceptions.S src/gic.S src/timer.S src/string.S src/shell.S src/mmu.S src/sched.S src/syscall.S src/ramfs.S src/spinlock.S src/smp.S
+DISK := $(BUILD)/disk.img
+SRCS := src/boot.S src/uart.S src/main.S src/vectors.S src/exceptions.S src/gic.S src/timer.S src/string.S src/shell.S src/mmu.S src/sched.S src/syscall.S src/ramfs.S src/spinlock.S src/smp.S src/virtio_blk.S
 OBJECTS := $(patsubst src/%.S,$(BUILD)/%.o,$(SRCS))
 QEMU ?= qemu-system-aarch64
-QEMU_FLAGS ?= -M virt -cpu cortex-a72 -smp 4 -m 128M -nographic -serial mon:stdio
+QEMU_FLAGS ?= -M virt -cpu cortex-a72 -smp 4 -m 128M -nographic -serial mon:stdio -drive file=$(DISK),format=raw,if=none,id=hd0 -device virtio-blk-device,drive=hd0
 
 ifneq ($(and $(CLANG),$(LLD),$(LLVM_OBJCOPY)),)
 TARGET := --target=aarch64-unknown-none-elf
@@ -41,19 +42,22 @@ $(ELF): linker.ld $(OBJECTS)
 $(BIN): $(ELF)
 	$(OBJCOPY) -O binary $< $@
 
-run: all
+$(DISK): | $(BUILD)
+	test -e $@ || dd if=/dev/zero of=$@ bs=512 count=128 2>/dev/null
+
+run: all $(DISK)
 	$(QEMU) $(QEMU_FLAGS) -kernel $(ELF)
 
-test: all
+test: all $(DISK)
 	@status=0; \
 		: >$(BUILD)/test.log; \
 		( tries=0; until grep -q '^talos> ' $(BUILD)/test.log; do \
 			tries=$$((tries + 1)); test $$tries -lt 100 || exit 1; sleep 0.05; \
-		  done; sleep 0.15; printf 'help\ninfo\ncpuinfo\nmmu\nticks\nuptime\nls\ncat motd.txt\nexec reader.bin\nexec hello.bin\nexec fault.bin\nuser\nuser fault\nyield\ntasks\npeek 0x40080000\nhalt\n' ) | \
+		  done; sleep 0.15; printf 'help\ninfo\ncpuinfo\nmmu\nticks\nuptime\nls\ncat motd.txt\nexec reader.bin\nexec hello.bin\nexec fault.bin\nuser\nuser fault\nyield\ntasks\npeek 0x40080000\nblkinfo\nblkwrite 0 TalosDiskOK\nblkread 0\nexec blktest.bin\nhalt\n' ) | \
 		perl -e 'alarm 5; exec @ARGV' $(QEMU) $(QEMU_FLAGS) -kernel $(ELF) >$(BUILD)/test.log 2>&1 || status=$$?; \
 		cat $(BUILD)/test.log; \
 		test "$$status" -eq 0 && \
-		grep -Fq "Talos v0.10.0" $(BUILD)/test.log && \
+		grep -Fq "Talos v0.11.0" $(BUILD)/test.log && \
 		grep -q "^talos> help" $(BUILD)/test.log && \
 		grep -q "^Commands: .*cpuinfo.*ls.*cat <file>.*exec <file>.*user \[fault\]" $(BUILD)/test.log && \
 		grep -q "^CurrentEL: 1" $(BUILD)/test.log && \
@@ -95,6 +99,12 @@ test: all
 			} END { exit !migrated }' $(BUILD)/test.log || exit 1; \
 		done && \
 		grep -Eq "^0x0000000040080000: 0x[[:xdigit:]]{16}" $(BUILD)/test.log && \
+		grep -q "^VirtIO-Blk MMIO" $(BUILD)/test.log && \
+		grep -Fq "128 sectors (64 KiB)  Mode: RW" $(BUILD)/test.log && \
+		grep -Fq "Wrote sector 0." $(BUILD)/test.log && \
+		grep -q "^0x00: 0x736944736F6C6154" $(BUILD)/test.log && \
+		grep -q "^0x08: 0x00000000004B4F6B" $(BUILD)/test.log && \
+		grep -Fq "blktest.bin: VirtIO-Blk EL0 read/write verified!" $(BUILD)/test.log && \
 		grep -q "Halting via PSCI SYSTEM_OFF" $(BUILD)/test.log
 
 clean:
