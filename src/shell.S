@@ -108,6 +108,7 @@ shell_run:
     mov x20, x0
     match_command help
     match_command info
+    match_command cpuinfo
     match_command mmu
     match_command ticks
     match_command uptime
@@ -150,6 +151,36 @@ shell_run:
     mrs x0, daif
     bl uart_puthex
     b .Lnewline
+
+.Lcmd_cpuinfo:
+    puts_label .Lonline_count
+    bl smp_online_count
+    bl uart_putdec
+    puts_label .Lcpu_header
+    mov x19, #0
+.Lcpu_row:
+    mov x0, x19
+    bl uart_putdec
+    puts_label .Lcpu_gap
+    orr x0, x19, #0x80000000
+    bl uart_puthex
+    mov x0, x19
+    bl smp_is_online
+    cbz w0, .Lcpu_offline
+    puts_label .Lcpu_online_text
+    b .Lcpu_ticks
+.Lcpu_offline:
+    puts_label .Lcpu_offline_text
+.Lcpu_ticks:
+    mov x0, x19
+    bl timer_get_core_ticks
+    bl uart_putdec
+    mov w0, #10
+    bl uart_putc
+    add x19, x19, #1
+    cmp x19, #4
+    b.lo .Lcpu_row
+    b .Lprompt
 
 .Lcmd_mmu:
     puts_label .Lsctlr
@@ -413,6 +444,7 @@ shell_run:
 .Lhint:           .asciz " (type 'help')\n"
 .Lname_help:      .asciz "help"
 .Lname_info:      .asciz "info"
+.Lname_cpuinfo:   .asciz "cpuinfo"
 .Lname_mmu:       .asciz "mmu"
 .Lname_ticks:     .asciz "ticks"
 .Lname_uptime:    .asciz "uptime"
@@ -427,12 +459,17 @@ shell_run:
 .Lname_brk:       .asciz "brk"
 .Lname_reboot:    .asciz "reboot"
 .Lname_halt:      .asciz "halt"
-.Lhelp_text:      .asciz "Commands: help, info, mmu, ticks, uptime, tasks, yield, ls, cat <file>, exec <file>, user [fault], peek <hex_addr>, brk, reboot, halt\n"
-.Linfo_el:        .asciz "Talos v0.8.0 (aarch64-virt)\nCurrentEL: "
+.Lhelp_text:      .asciz "Commands: help, info, cpuinfo, mmu, ticks, uptime, tasks, yield, ls, cat <file>, exec <file>, user [fault], peek <hex_addr>, brk, reboot, halt\n"
+.Linfo_el:        .asciz "Talos v0.9.0 (aarch64-virt)\nCurrentEL: "
 .Lmpidr:          .asciz "\nMPIDR_EL1: "
 .Lvbar:           .asciz "\nVBAR_EL1 : "
 .Lcntfrq:         .asciz "\nCNTFRQ   : "
 .Lhz_daif:        .asciz " Hz\nDAIF     : "
+.Lonline_count:   .asciz "Online CPUs: "
+.Lcpu_header:     .asciz " / 4\nCPU  MPIDR               STATE    IRQ_TICKS\n"
+.Lcpu_gap:        .asciz "    "
+.Lcpu_online_text:  .asciz "  ONLINE   "
+.Lcpu_offline_text: .asciz "  OFFLINE  "
 .Lsctlr:          .asciz "SCTLR_EL1: "
 .Lttbr0:          .asciz "\nTTBR0_EL1: "
 .Ltcr:            .asciz "\nTCR_EL1  : "
