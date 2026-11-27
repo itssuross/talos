@@ -53,13 +53,15 @@ test: all
 		perl -e 'alarm 5; exec @ARGV' $(QEMU) $(QEMU_FLAGS) -kernel $(ELF) >$(BUILD)/test.log 2>&1 || status=$$?; \
 		cat $(BUILD)/test.log; \
 		test "$$status" -eq 0 && \
-		grep -Fq "Talos v0.9.0" $(BUILD)/test.log && \
+		grep -Fq "Talos v0.10.0" $(BUILD)/test.log && \
 		grep -q "^talos> help" $(BUILD)/test.log && \
 		grep -q "^Commands: .*cpuinfo.*ls.*cat <file>.*exec <file>.*user \[fault\]" $(BUILD)/test.log && \
 		grep -q "^CurrentEL: 1" $(BUILD)/test.log && \
 		grep -q "^Online CPUs: 4 / 4" $(BUILD)/test.log && \
+		grep -Fq "CPU  MPIDR               STATE    IRQ_TICKS  SGI_IPI" $(BUILD)/test.log && \
 		for cpu in 0 1 2 3; do \
-			grep -Eq "^$$cpu +0x000000008000000$$cpu +ONLINE +[1-9][0-9]*[[:space:]]*$$" $(BUILD)/test.log || exit 1; \
+			sgi=0; test "$$cpu" -eq 0 || sgi='[1-9][0-9]*'; \
+			grep -Eq "^$$cpu +0x000000008000000$$cpu +ONLINE +[1-9][0-9]* +$$sgi[[:space:]]*$$" $(BUILD)/test.log || exit 1; \
 		done && \
 		grep -Eq "^SCTLR_EL1: 0x[[:xdigit:]]{16}" $(BUILD)/test.log && \
 		grep -Eq "^TTBR0_EL1: 0x[[:xdigit:]]{13}000" $(BUILD)/test.log && \
@@ -79,12 +81,19 @@ test: all
 		grep -Eq "^\[EL0 fault\] ESR_EL1=0x000000009[23][[:xdigit:]]{6} ELR_EL1=0x0000000040200004 FAR_EL1=0x0000000040080000" $(BUILD)/test.log && \
 		grep -q "EL0t fault isolated; returned to shell." $(BUILD)/test.log && \
 		grep -Fq "Yielded CPU to scheduler." $(BUILD)/test.log && \
-		grep -Fq "ID  STATE    SWITCHES  TICKS     NAME" $(BUILD)/test.log && \
-		grep -Eq "^0 +RUNNING +[1-9][0-9]* +[1-9][0-9]* +shell[[:space:]]*$$" $(BUILD)/test.log && \
-		grep -Eq "^1 +READY +[1-9][0-9]* +[1-9][0-9]* +worker-a[[:space:]]*$$" $(BUILD)/test.log && \
-		grep -Eq "^2 +READY +[1-9][0-9]* +[1-9][0-9]* +worker-b[[:space:]]*$$" $(BUILD)/test.log && \
-		grep -Eq "^worker-a iterations: [1-9][0-9]*" $(BUILD)/test.log && \
-		grep -Eq "^worker-b iterations: [1-9][0-9]*" $(BUILD)/test.log && \
+		grep -Fq "ID  STATE     CPU  AFF   SWITCHES  TICKS     NAME" $(BUILD)/test.log && \
+		grep -Eq "^0 +RUNNING +0 +0 +[1-9][0-9]* +[1-9][0-9]* +shell[[:space:]]*$$" $(BUILD)/test.log && \
+		for cpu in 1 2 3; do \
+			grep -Eq "^$$cpu +(READY|RUNNING) +$$cpu +$$cpu +[1-9][0-9]* +[0-9]+ +idle-$$cpu[[:space:]]*$$" $(BUILD)/test.log || exit 1; \
+		done && \
+		for worker in a b; do \
+			slot=4; test "$$worker" = a || slot=5; \
+			grep -Eq "^$$slot +(READY|RUNNING|SLEEPING) +[0-3] +ANY +[1-9][0-9]* +[0-9]+ +worker-$$worker[[:space:]]*$$" $(BUILD)/test.log || exit 1; \
+			awk -v name="worker-$$worker" '{ sub(/\r$$/, "") } $$1 == name && NF == 5 { \
+				cpus = 0; for (i = 2; i <= 5; i++) if ($$i + 0 > 0) cpus++; \
+				if (cpus >= 2) migrated = 1; \
+			} END { exit !migrated }' $(BUILD)/test.log || exit 1; \
+		done && \
 		grep -Eq "^0x0000000040080000: 0x[[:xdigit:]]{16}" $(BUILD)/test.log && \
 		grep -q "Halting via PSCI SYSTEM_OFF" $(BUILD)/test.log
 
