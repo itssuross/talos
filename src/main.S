@@ -89,7 +89,7 @@ worker_entry worker_b_entry
 
 .section .rodata, "a"
 .Lbanner:
-    .asciz "Talos v0.12.0 (aarch64-virt)\nType 'help' for available commands.\n"
+    .asciz "Talos v1.0.0 (aarch64-virt)\nType 'help' for available commands.\n"
 .Lworker_a_name:
     .asciz "worker-a"
 .Lworker_b_name:
