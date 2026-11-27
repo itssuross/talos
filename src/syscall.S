@@ -171,14 +171,16 @@ syscall_dispatch:
 
 .Lsys_write:
     ldp x20, x21, [x19, #0]
-    cmp x21, #SYS_WRITE_MAX
-    b.hi .Lsys_invalid
     movz x2, #0x4020, lsl #16 // USER_BASE
     cmp x20, x2
     b.lo .Lsys_invalid
+    movz x2, #0x4040, lsl #16 // USER_END
+    cmp x20, x2
+    b.hs .Lsys_invalid
+    cmp x21, #SYS_WRITE_MAX
+    b.hi .Lsys_invalid
     adds x3, x20, x21
     b.cs .Lsys_invalid
-    movz x2, #0x4040, lsl #16 // USER_END
     cmp x3, x2
     b.hi .Lsys_invalid
 
@@ -306,11 +308,13 @@ syscall_dispatch:
     movz x5, #0x4020, lsl #16 // USER_BASE
     cmp x1, x5
     b.lo .Lsys_invalid
+    movz x6, #0x4040, lsl #16 // USER_END
+    cmp x1, x6
+    b.hs .Lsys_invalid
     cmp x2, #SYS_READ_MAX
     b.hi .Lsys_invalid
     adds x5, x1, x2
     b.cs .Lsys_invalid
-    movz x6, #0x4040, lsl #16 // USER_END
     cmp x5, x6
     b.hi .Lsys_invalid
 
@@ -362,6 +366,35 @@ syscall_dispatch:
     ret
 .size syscall_dispatch, . - syscall_dispatch
 
+// ABI: Zeroes [USER_BASE, USER_END) and synchronizes D/I caches. Preserves x0–x1; clobbers x2–x5 and NZCV.
+.Lzero_user_arena:
+    movz x2, #0x4020, lsl #16 // USER_BASE
+    movz x3, #0x4040, lsl #16 // USER_END
+    mov x4, x2
+.Lzero_arena_loop:
+    stp xzr, xzr, [x4, #0]
+    stp xzr, xzr, [x4, #16]
+    stp xzr, xzr, [x4, #32]
+    stp xzr, xzr, [x4, #48]
+    add x4, x4, #64
+    cmp x4, x3
+    b.lo .Lzero_arena_loop
+    mrs x5, ctr_el0
+    ubfx x5, x5, #16, #4 // DminLine
+    mov x4, #4
+    lsl x5, x4, x5
+    mov x4, x2
+.Lzero_arena_dc:
+    dc cvau, x4
+    add x4, x4, x5
+    cmp x4, x3
+    b.lo .Lzero_arena_dc
+    dsb ish
+    ic ialluis
+    dsb ish
+    isb
+    ret
+
 .global user_exec_image
 .type user_exec_image, %function
 
@@ -378,6 +411,7 @@ user_exec_image:
 
     stp x29, x30, [sp, #-16]!
     mov x29, sp
+    bl .Lzero_user_arena
     bl elf64_load
     cbz x0, .Limage_load_failed
     ldr x1, =USER_STACK_TOP
@@ -404,6 +438,7 @@ user_exec_blob:
 
     stp x29, x30, [sp, #-16]!
     mov x29, sp
+    bl .Lzero_user_arena
 
     movz x2, #0x4020, lsl #16 // USER_BASE
     mov x3, x2
