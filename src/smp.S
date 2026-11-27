@@ -2,6 +2,9 @@
 .balign 4
 cpu_online:
     .word 0, 0, 0, 0
+.balign 8
+sgi_counts:
+    .quad 0, 0, 0, 0
 
 .section .text, "ax"
 .global smp_init
@@ -52,6 +55,8 @@ smp_secondary_main:
     bl mmu_init_secondary
     bl gic_init_cpu
     bl timer_init_cpu
+    mov x0, x19
+    bl sched_register_idle
     adr x1, cpu_online
     add x1, x1, x19, lsl #2
     mov w0, #1
@@ -96,3 +101,25 @@ smp_online_count:
     b.ne .Lcount_online
     ret
 .size smp_online_count, . - smp_online_count
+
+.global smp_record_sgi
+.type smp_record_sgi, %function
+
+// ABI: Local CPU ID (0–3) in x0, IRQs masked. Clobbers x1–x2.
+smp_record_sgi:
+    adr x1, sgi_counts
+    ldr x2, [x1, x0, lsl #3]
+    add x2, x2, #1
+    str x2, [x1, x0, lsl #3]
+    ret
+.size smp_record_sgi, . - smp_record_sgi
+
+.global smp_get_sgi_count
+.type smp_get_sgi_count, %function
+
+// ABI: CPU ID (0–3) in x0. Returns SGI 0 count in x0. Clobbers x1.
+smp_get_sgi_count:
+    adr x1, sgi_counts
+    ldr x0, [x1, x0, lsl #3]
+    ret
+.size smp_get_sgi_count, . - smp_get_sgi_count
