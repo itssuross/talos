@@ -35,7 +35,7 @@ irq_disable:
 .global irq_dispatch
 .type irq_dispatch, %function
 
-// ABI: Clobbers x0–x8 and NZCV. Preserves callee-saved registers.
+// ABI: Clobbers caller-saved registers and NZCV.
 irq_dispatch:
     stp x29, x30, [sp, #-32]!
     mov x29, sp
@@ -45,18 +45,23 @@ irq_dispatch:
     and w20, w0, #0x3ff
     cmp w20, #1020
     b.hs .Lirq_done
+    cbz w20, .Lreschedule_ipi
     cmp w20, #30
     b.ne .Lirq_eoi
     bl timer_irq_handler
+    b .Lirq_schedule
+.Lreschedule_ipi:
+    mrs x0, mpidr_el1
+    and x0, x0, #0xff
+    bl smp_record_sgi
+.Lirq_schedule:
+    mov w0, w19
+    bl gic_eoi_irq
+    bl sched_on_tick
+    b .Lirq_done
 .Lirq_eoi:
     mov w0, w19
     bl gic_eoi_irq
-    cmp w20, #30
-    b.ne .Lirq_done
-    mrs x0, mpidr_el1
-    and x0, x0, #0xff
-    cbnz x0, .Lirq_done
-    bl sched_on_tick
 .Lirq_done:
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #32
