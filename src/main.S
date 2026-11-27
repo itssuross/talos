@@ -6,6 +6,7 @@
 kmain:
     bl uart_init
     bl exceptions_init
+    bl mmu_init
     bl gic_init
     bl timer_init
     adrp x0, .Lbanner
@@ -18,4 +19,4 @@ kmain:
 
 .section .rodata, "a"
 .Lbanner:
-    .asciz "Talos v0.4.0 (aarch64-virt)\nType 'help' for available commands.\n"
+    .asciz "Talos v0.5.0 (aarch64-virt)\nType 'help' for available commands.\n"
