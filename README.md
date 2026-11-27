@@ -4,7 +4,7 @@ Talos (`itssuross/talos`) is a hobbyist bare-metal ARM64 kernel written entirely
 
 ## Target hardware
 
-`qemu-system-aarch64 -M virt -cpu cortex-a72 -m 128M`
+`qemu-system-aarch64 -M virt -cpu cortex-a72 -smp 4 -m 128M`
 
 | Component | Address or interface |
 | --- | --- |
@@ -13,7 +13,7 @@ Talos (`itssuross/talos`) is a hobbyist bare-metal ARM64 kernel written entirely
 | GICv2 Distributor | `0x0800_0000` |
 | GICv2 CPU Interface | `0x0801_0000` |
 | ARM Generic Timer | EL1 non-secure physical timer (`CNTP`), PPI 30, 100 Hz |
-| PSCI conduit | `hvc #0` (`SYSTEM_OFF = 0x8400_0008`, `SYSTEM_RESET = 0x8400_0009`) |
+| PSCI conduit | `hvc #0` (`CPU_ON = 0xC400_0003`, `SYSTEM_OFF = 0x8400_0008`, `SYSTEM_RESET = 0x8400_0009`) |
 
 ## EL1 memory map
 
@@ -41,11 +41,19 @@ On Apple Silicon macOS, install QEMU and the LLVM toolchain with `brew install q
 | `make LLD=` | Builds using GNU `aarch64-elf-*` binutils |
 | `make clean` | Removes `build/` |
 
+## Four-core SMP
+
+Core 0 builds the identity-mapped page tables, enables the GICv2 distributor, and starts cores 1–3 with PSCI `CPU_ON` over `hvc #0`. Each secondary enters at `secondary_entry` in `src/boot.S` with a dedicated 4 KiB `SP_EL1` stack. In `src/smp.S` it installs its exception vectors and enables the MMU using the shared tables before publishing its online flag with a release store. Core 0 waits up to one second for each successfully started core to report online.
+
+Each core enables its banked GICv2 CPU interface, configures PPI 30 in the banked distributor registers, and arms its own 100 Hz physical timer. The IRQ handler increments the core’s slot in `core_ticks[0..3]`. Cores 1–3 return to `wfi` after servicing interrupts. Core 0 runs the task scheduler.
+
+The PL011 driver takes a shared lock once per `uart_putc` call or whole `uart_puts` string. The spinlocks in `src/spinlock.S` use the ARMv8 exclusive monitor (`ldaxr` and `stxr`), wait with `wfe`, and release with `stlr`. During early single-core boot, the lock operations return immediately while the MMU is off.
+
 ## Task scheduler
 
 Talos schedules up to four EL1 tasks in round-robin order. Slot 0 runs the UART shell on the boot stack. Slots 1–3 each have a 4 KiB stack. At boot, `worker-a` and `worker-b` each increment a counter and wait for an interrupt with `wfi`. Only the shell writes to UART0 during normal operation.
 
-Every 100 Hz timer interrupt charges one tick to the running task. The dispatcher sends the GICv2 end-of-interrupt before the scheduler can switch stacks. Both a timer tick and a cooperative yield select the next ready task and call `context_switch`. It saves `x19`–`x30` in a 96-byte frame on the outgoing task’s `SP_EL1` stack, saves that stack pointer in its task control block, and restores the incoming task’s frame. A new task starts in `task_trampoline`, which unmasks IRQs and calls its entry point with its argument. Returning from the entry point frees the slot for reuse.
+Every 100 Hz timer interrupt on core 0 charges one tick to the running task. The dispatcher sends the GICv2 end-of-interrupt before the scheduler can switch stacks. Both a timer tick and a cooperative yield select the next ready task and call `context_switch`. It saves `x19`–`x30` in a 96-byte frame on the outgoing task’s `SP_EL1` stack, saves that stack pointer in its task control block, and restores the incoming task’s frame. A new task starts in `task_trampoline`, which unmasks IRQs and calls its entry point with its argument. Returning from the entry point frees the slot for reuse.
 
 ## EL0t user mode, RAMFS, and syscalls
 
@@ -74,8 +82,9 @@ Run `make run` and enter commands at the `talos> ` prompt. The PL011 line editor
 | --- | --- |
 | `help` | Lists the built-in commands. |
 | `info` | Prints the kernel version, current exception level, CPU affinity register, vector base, counter frequency in Hz, and interrupt masks. |
+| `cpuinfo` | Prints the online CPU count and each core’s ID, MPIDR, online state, and timer IRQ count. |
 | `mmu` | Prints `SCTLR_EL1`, `TTBR0_EL1`, `TCR_EL1`, and `MAIR_EL1`, followed by the MMU state. |
-| `ticks` | Prints the number of timer interrupts since boot. |
+| `ticks` | Prints the number of timer interrupts on core 0 since boot. |
 | `uptime` | Prints uptime in seconds to two decimal places and the corresponding tick count. |
 | `tasks` | Shows each active task’s ID, state, switch-in count, accrued timer ticks, and name, followed by the worker iteration counts. |
 | `yield` | Hands the CPU to the next ready task and prints a confirmation when the shell resumes. |
@@ -98,3 +107,4 @@ Run `make run` and enter commands at the `talos> ` prompt. The PL011 line editor
 - [x] **v0.6.0** — Four-slot preemptive round-robin scheduler, cooperative yields, per-task stacks, background workers, and the `tasks` and `yield` shell commands.
 - [x] **v0.7.0** — Hardware-isolated 2 MiB `EL0t` user arena (`0x4020_0000`–`0x403F_FFFF`), `eret` trampoline with cache coherency, `SVC #0` syscall dispatcher (`SYS_EXIT`, `SYS_WRITE`, `SYS_GETTICKS`, `SYS_YIELD`), Lower-EL fault recovery, and the `user [fault]` shell command.
 - [x] **v0.8.0** — Pure AArch64 read-only in-memory filesystem (`TalosFS` in `src/ramfs.S`), per-process 4-slot file descriptor table, bounds-checked file syscalls (`SYS_OPEN`, `SYS_READ`, `SYS_CLOSE`), dynamic `EL0t` binary loader (`user_exec_blob`), and the `ls`, `cat`, and `exec` shell commands.
+- [x] **v0.9.0** — Four-core Cortex-A72 bring-up via PSCI `CPU_ON`, per-core GICv2 and Generic Timer IRQs, exclusive-monitor UART spinlocks, and the `cpuinfo` shell command.
