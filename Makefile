@@ -7,10 +7,10 @@ LLVM_OBJCOPY := $(or $(wildcard $(LLVM_PREFIX)/bin/llvm-objcopy),$(shell command
 BUILD := build
 ELF := $(BUILD)/talos.elf
 BIN := $(BUILD)/talos.bin
-SRCS := src/boot.S src/uart.S src/main.S src/vectors.S src/exceptions.S src/gic.S src/timer.S src/string.S src/shell.S src/mmu.S src/sched.S src/syscall.S src/ramfs.S
+SRCS := src/boot.S src/uart.S src/main.S src/vectors.S src/exceptions.S src/gic.S src/timer.S src/string.S src/shell.S src/mmu.S src/sched.S src/syscall.S src/ramfs.S src/spinlock.S src/smp.S
 OBJECTS := $(patsubst src/%.S,$(BUILD)/%.o,$(SRCS))
 QEMU ?= qemu-system-aarch64
-QEMU_FLAGS ?= -M virt -cpu cortex-a72 -m 128M -nographic
+QEMU_FLAGS ?= -M virt -cpu cortex-a72 -smp 4 -m 128M -nographic -serial mon:stdio
 
 ifneq ($(and $(CLANG),$(LLD),$(LLVM_OBJCOPY)),)
 TARGET := --target=aarch64-unknown-none-elf
@@ -42,21 +42,25 @@ $(BIN): $(ELF)
 	$(OBJCOPY) -O binary $< $@
 
 run: all
-	$(QEMU) $(QEMU_FLAGS) -serial mon:stdio -kernel $(ELF)
+	$(QEMU) $(QEMU_FLAGS) -kernel $(ELF)
 
 test: all
 	@status=0; \
 		: >$(BUILD)/test.log; \
 		( tries=0; until grep -q '^talos> ' $(BUILD)/test.log; do \
 			tries=$$((tries + 1)); test $$tries -lt 100 || exit 1; sleep 0.05; \
-		  done; sleep 0.15; printf 'help\ninfo\nmmu\nticks\nuptime\nls\ncat motd.txt\nexec reader.bin\nexec hello.bin\nexec fault.bin\nuser\nuser fault\nyield\ntasks\npeek 0x40080000\nhalt\n' ) | \
-		perl -e 'alarm 5; exec @ARGV' $(QEMU) $(QEMU_FLAGS) -serial stdio -monitor none -kernel $(ELF) >$(BUILD)/test.log 2>&1 || status=$$?; \
+		  done; sleep 0.15; printf 'help\ninfo\ncpuinfo\nmmu\nticks\nuptime\nls\ncat motd.txt\nexec reader.bin\nexec hello.bin\nexec fault.bin\nuser\nuser fault\nyield\ntasks\npeek 0x40080000\nhalt\n' ) | \
+		perl -e 'alarm 5; exec @ARGV' $(QEMU) $(QEMU_FLAGS) -kernel $(ELF) >$(BUILD)/test.log 2>&1 || status=$$?; \
 		cat $(BUILD)/test.log; \
 		test "$$status" -eq 0 && \
-		grep -Fq "Talos v0.8.0" $(BUILD)/test.log && \
+		grep -Fq "Talos v0.9.0" $(BUILD)/test.log && \
 		grep -q "^talos> help" $(BUILD)/test.log && \
-		grep -q "^Commands: .*ls.*cat <file>.*exec <file>.*user \[fault\]" $(BUILD)/test.log && \
+		grep -q "^Commands: .*cpuinfo.*ls.*cat <file>.*exec <file>.*user \[fault\]" $(BUILD)/test.log && \
 		grep -q "^CurrentEL: 1" $(BUILD)/test.log && \
+		grep -q "^Online CPUs: 4 / 4" $(BUILD)/test.log && \
+		for cpu in 0 1 2 3; do \
+			grep -Eq "^$$cpu +0x000000008000000$$cpu +ONLINE +[1-9][0-9]*[[:space:]]*$$" $(BUILD)/test.log || exit 1; \
+		done && \
 		grep -Eq "^SCTLR_EL1: 0x[[:xdigit:]]{16}" $(BUILD)/test.log && \
 		grep -Eq "^TTBR0_EL1: 0x[[:xdigit:]]{13}000" $(BUILD)/test.log && \
 		grep -Eq "^TCR_EL1  : 0x0000000[0-5]00803519" $(BUILD)/test.log && \
