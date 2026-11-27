@@ -308,7 +308,7 @@ shell_run:
     cmp x1, #1
     b.ne .Lexec_not_exec
     ldp x0, x1, [x0, #8]
-    bl user_exec_blob
+    bl user_exec_image
     mov x19, x0
     puts_label .Lexec_exited
     cmp x19, #0
@@ -635,7 +635,7 @@ shell_run:
 .Lname_reboot:    .asciz "reboot"
 .Lname_halt:      .asciz "halt"
 .Lhelp_text:      .asciz "Commands: help, info, cpuinfo, mmu, ticks, uptime, tasks, yield, ls, cat <file>, exec <file>, user [fault], blkinfo, blkread <sec>, blkwrite <sec> <text>, peek <hex_addr>, brk, reboot, halt\n"
-.Linfo_el:        .asciz "Talos v0.11.0 (aarch64-virt)\nCurrentEL: "
+.Linfo_el:        .asciz "Talos v0.12.0 (aarch64-virt)\nCurrentEL: "
 .Lmpidr:          .asciz "\nMPIDR_EL1: "
 .Lvbar:           .asciz "\nVBAR_EL1 : "
 .Lcntfrq:         .asciz "\nCNTFRQ   : "
