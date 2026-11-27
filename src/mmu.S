@@ -41,6 +41,15 @@ mmu_init:
     orr x1, x1, #3
     orr x2, x2, #3
     stp x1, x2, [x0]
+    b mmu_init_secondary
+.size mmu_init, . - mmu_init
+
+.global mmu_init_secondary
+.type mmu_init_secondary, %function
+
+// ABI: Requires populated tables and MMU off. Clobbers x0–x2 and NZCV.
+mmu_init_secondary:
+    adrp x0, mmu_l1
 
     mov x1, #0xff00 // Attr0: Device-nGnRnE, Attr1: Normal WBWA
     msr mair_el1, x1
@@ -65,4 +74,4 @@ mmu_init:
     msr sctlr_el1, x0
     isb
     ret
-.size mmu_init, . - mmu_init
+.size mmu_init_secondary, . - mmu_init_secondary
