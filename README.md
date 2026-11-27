@@ -39,6 +39,12 @@ On Apple Silicon macOS, install QEMU and the LLVM toolchain with `brew install q
 | `make LLD=` | Builds using GNU `aarch64-elf-*` binutils |
 | `make clean` | Removes `build/` |
 
+## Task scheduler
+
+Talos schedules up to four EL1 tasks in round-robin order. Slot 0 runs the UART shell on the boot stack. Slots 1–3 each have a 4 KiB stack. At boot, `worker-a` and `worker-b` each increment a counter and wait for an interrupt with `wfi`. Only the shell writes to UART0 during normal operation.
+
+Every 100 Hz timer interrupt charges one tick to the running task. The dispatcher sends the GICv2 end-of-interrupt before the scheduler can switch stacks. Both a timer tick and a cooperative yield select the next ready task and call `context_switch`. It saves `x19`–`x30` in a 96-byte frame on the outgoing task’s `SP_EL1` stack, saves that stack pointer in its task control block, and restores the incoming task’s frame. A new task starts in `task_trampoline`, which unmasks IRQs and calls its entry point with its argument. Returning from the entry point frees the slot for reuse.
+
 ## UART0 shell
 
 Run `make run` and enter commands at the `talos> ` prompt. The PL011 line editor echoes up to 127 printable characters. Enter submits the line, Backspace or Delete erases the last character, and Ctrl+C cancels the line. The 100 Hz timer keeps counting while the shell waits for input.
@@ -50,6 +56,8 @@ Run `make run` and enter commands at the `talos> ` prompt. The PL011 line editor
 | `mmu` | Prints `SCTLR_EL1`, `TTBR0_EL1`, `TCR_EL1`, and `MAIR_EL1`, followed by the MMU state. |
 | `ticks` | Prints the number of timer interrupts since boot. |
 | `uptime` | Prints uptime in seconds to two decimal places and the corresponding tick count. |
+| `tasks` | Shows each active task’s ID, state, switch-in count, accrued timer ticks, and name, followed by the worker iteration counts. |
+| `yield` | Hands the CPU to the next ready task and prints a confirmation when the shell resumes. |
 | `peek <hex_addr>` | Reads a 64-bit word at an 8-byte-aligned address. Use 1–16 hex digits with an optional `0x` or `0X` prefix. For example, `peek 0x40080000` reads the first word of the kernel image. An unmapped address can trigger a data abort. |
 | `brk` | Executes `BRK #0x42`, prints the exception register dump, and shuts down. |
 | `reboot` | Resets QEMU via PSCI and returns to a fresh shell. |
@@ -62,3 +70,4 @@ Run `make run` and enter commands at the `talos> ` prompt. The PL011 line editor
 - [x] **v0.3.0** — The EL1h IRQ vector saves and restores the interrupted context. The GICv2 dispatcher handles physical timer interrupts on PPI 30, counting each tick and rearming the timer for 10 ms. The v0.3.0 boot test printed the counter frequency and the first ten ticks over UART before PSCI shutdown.
 - [x] **v0.4.0** — Interactive UART0 kernel shell with line editing, system inspection, live timer queries, and PSCI reboot and shutdown.
 - [x] **v0.5.0** — EL1 stage-1 identity mapping, instruction and data caches, and the `mmu` shell command.
+- [x] **v0.6.0** — Four-slot preemptive round-robin scheduler, cooperative yields, per-task stacks, background workers, and the `tasks` and `yield` shell commands.
