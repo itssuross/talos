@@ -75,8 +75,8 @@ test: all $(DISK)
 		perl -e 'alarm 15; exec @ARGV' $(QEMU) $(QEMU_FLAGS) -kernel $(ELF) >$(BUILD)/test.log 2>&1 || status=$$?; \
 		cat $(BUILD)/test.log; \
 		test "$$status" -eq 0 && \
-		grep -Fq "Talos v1.0.1 (aarch64-virt)" $(BUILD)/test.log && \
-		grep -Fq "Talos v1.0.1 (aarch64-virt) - Pure AArch64 Assembly Microkernel" $(BUILD)/test.log && \
+		grep -Fq "Talos v1.0.2 (aarch64-virt)" $(BUILD)/test.log && \
+		grep -Fq "Talos v1.0.2 (aarch64-virt) - Pure AArch64 Assembly Microkernel" $(BUILD)/test.log && \
 		grep -Fq "ABI: v1.0 (12 syscalls, EL1 MMU 4KiB/39-bit, GICv2, 4-core SMP, VirtIO-Blk, ELF64)" $(BUILD)/test.log && \
 		grep -q "^talos> help" $(BUILD)/test.log && \
 		grep -q "^Commands: .*version.*cpuinfo.*ls.*cat <file>.*exec <file>.*user \[fault\]" $(BUILD)/test.log && \
